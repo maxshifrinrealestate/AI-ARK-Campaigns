@@ -1,0 +1,25 @@
+{
+  "vertical": "finance",
+  "company": {
+    "name": "Acme Capital Tools",
+    "description": "Acme Capital Tools builds embedded finance and treasury automation software for mid-market B2B companies. We help finance teams automate AR/AP, cash forecasting, and reconciliation across multiple banks and ERPs."
+  },
+  "product": {
+    "name": "Acme Treasury OS",
+    "description": "An AI-native treasury management platform that consolidates bank balances, automates reconciliation, forecasts 13-week cash flow, and gives controllers a single approval workflow for payments across entities."
+  },
+  "campaigns": {
+    "smtp": {
+      "workspaceId": "REPLACE_WITH_SMTP_WORKSPACE_ID",
+      "campaignId": "REPLACE_WITH_SMTP_CAMPAIGN_ID"
+    },
+    "catchAll": {
+      "workspaceId": "REPLACE_WITH_CATCHALL_WORKSPACE_ID",
+      "campaignId": "REPLACE_WITH_CATCHALL_CAMPAIGN_ID"
+    }
+  },
+  "limits": {
+    "openaiConcurrency": 5,
+    "uploadConcurrency": 3
+  }
+}
