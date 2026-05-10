@@ -2,6 +2,12 @@
 
 TypeScript implementation of the AI Ark Campaigns lead pipeline. Implements every stage of `AIARK_CAMPAIGNS_PIPELINE_RUNBOOK.md` and adds two new OpenAI-powered functions for ICP definition and competitor discovery.
 
+Recent litmus enrichment updates:
+
+- Added OpenAI `talent_type` enrichment for hiring profile output (1-2 short plural labels, e.g. `CNAs, LVNs`).
+- Added OpenAI `facility_type` enrichment as a short broad facility label.
+- `scripts/enrich10-no-upload.ts` now emits a minimal business-facing pilot CSV with `final_email`, `company_name_normalized`, `facility_type`, and `talent_type`.
+
 ## Layout
 
 ```
