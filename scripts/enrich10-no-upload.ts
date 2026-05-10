@@ -51,7 +51,6 @@ async function run(): Promise<void> {
 
     let emailFound = "";
     let verificationStatus = "";
-    let verifiedEmail = "";
     let activeEmail = "";
     let emailSource = "";
     let gateReason = "";
@@ -82,7 +81,6 @@ async function run(): Promise<void> {
         if (!verified.accepted) {
           gateReason = "email_unverified";
         } else {
-          verifiedEmail = found.email.toLowerCase();
           activeEmail = found.email;
           emailSource = "trykit";
           summary.activeEligible += 1;
@@ -106,16 +104,14 @@ async function run(): Promise<void> {
     }
 
     rows.push({
-      ...lead,
-      mx_classification: mx.esp,
-      is_security_gateway: mx.isSeg ? "true" : "false",
-      email_found_trykitt: emailFound,
-      email_verification_status: verificationStatus,
-      verified_email: verifiedEmail,
-      active_email: activeEmail,
-      email_source: emailSource,
-      gate_reason: gateReason,
-      final_emails: [emailBusiness, verifiedEmail].filter(Boolean).join(", "),
+      first_name: cleanText(lead.first_name),
+      last_name: cleanText(lead.last_name),
+      title: cleanText(lead.title),
+      company_name: cleanText(lead.company_name),
+      company_website: cleanText(lead.company_website),
+      linkedin: cleanText(lead.linkedin),
+      domain_settings: cleanText(lead.domain_settings),
+      final_email: activeEmail,
       company_name_normalized: companyNameNormalized,
       facility_type: facilityType,
       talent_type: talentType
