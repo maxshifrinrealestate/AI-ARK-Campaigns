@@ -26,18 +26,17 @@ export type PlusVibeLeadPayload = {
   email: string;
   first_name?: string;
   last_name?: string;
-  company_name?: string;
-  title?: string;
-  linkedin?: string;
-  company_website?: string;
-  company_linkedin?: string;
-  company_size?: string;
-  company_industry?: string;
-  company_type?: string;
-  esp?: string;
+  notes?: string;
+  address_line?: string;
   city?: string;
-  state?: string;
   country?: string;
+  country_code?: string;
+  phone_number?: string;
+  company_name?: string;
+  company_website?: string;
+  linkedin_person_url?: string;
+  linkedin_company_url?: string;
+  custom_variables?: Record<string, string>;
 };
 
 export type UploadTarget = { workspaceId: string; campaignId: string };
@@ -55,9 +54,10 @@ export async function uploadLead(
     await withRetry(
       async () => {
         await c.post(
-          `/api/v1/campaign/${encodeURIComponent(target.campaignId)}/leads`,
+          "/api/v1/lead/add",
           {
             workspace_id: target.workspaceId,
+            campaign_id: target.campaignId,
             leads: [payload]
           }
         );

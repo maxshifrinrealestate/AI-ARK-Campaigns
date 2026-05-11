@@ -13,6 +13,7 @@ import {
 } from "../functions/classifyMx.js";
 import { normalizeCompany } from "../functions/normalizeCompany.js";
 import { classifyCompanyType } from "../functions/classifyCompanyType.js";
+import { enrichFacilityAndTalent } from "../functions/enrichFacilityAndTalent.js";
 import { findEmail } from "../functions/findEmail.js";
 import { verifyEmail } from "../functions/verifyEmail.js";
 import { routeCampaign, type CampaignsConfig } from "../functions/routeCampaign.js";
@@ -37,7 +38,12 @@ export type PipelineOptions = {
 type LeadRow = Record<string, string>;
 
 type RemovedLead = {
-  reason: "security_gateway" | "no_email_found" | "email_unverified" | "unknown_domain_setting";
+  reason:
+    | "security_gateway"
+    | "no_email_found"
+    | "email_unverified"
+    | "unknown_domain_setting"
+    | "catchall_skipped";
   email: string;
   domain: string;
   raw: LeadRow;
@@ -53,6 +59,8 @@ type EnrichedLead = {
   domain_settings: string;
   company_name_normalized: string;
   company_type: string;
+  facility_type: string;
+  talent_type: string;
   plusvibe_workspace_id: string;
   plusvibe_campaign_id: string;
   upload_ok: boolean;
@@ -61,6 +69,8 @@ type EnrichedLead = {
 
 type StageCounts = {
   input: number;
+  smtp_eligible: number;
+  catchall_skipped: number;
   after_stage1_mx: number;
   after_stage2_normalize: number;
   after_stage3_classify: number;
@@ -105,6 +115,8 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
 
   const counts: StageCounts = {
     input: leads.length,
+    smtp_eligible: 0,
+    catchall_skipped: 0,
     after_stage1_mx: 0,
     after_stage2_normalize: 0,
     after_stage3_classify: 0,
@@ -118,7 +130,8 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
       security_gateway: 0,
       no_email_found: 0,
       email_unverified: 0,
-      unknown_domain_setting: 0
+        unknown_domain_setting: 0,
+        catchall_skipped: 0
     }
   };
 
@@ -133,6 +146,32 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
     const emailBusiness = cleanText(raw.email_business);
     const companyWebsite = cleanText(raw.company_website);
     const domain = resolveLeadDomain(emailBusiness, companyWebsite);
+    const domainSettingRaw = cleanText(raw.domain_settings).toLowerCase().replace(/[^a-z]/g, "");
+
+    if (domainSettingRaw === "catchall") {
+      removed.push({
+        reason: "catchall_skipped",
+        email: emailBusiness,
+        domain,
+        raw,
+        detail: cleanText(raw.domain_settings)
+      });
+      counts.catchall_skipped++;
+      counts.drops_by_reason.catchall_skipped++;
+      continue;
+    }
+    if (domainSettingRaw !== "smtp") {
+      removed.push({
+        reason: "unknown_domain_setting",
+        email: emailBusiness,
+        domain,
+        raw,
+        detail: cleanText(raw.domain_settings)
+      });
+      counts.drops_by_reason.unknown_domain_setting++;
+      continue;
+    }
+    counts.smtp_eligible++;
 
     let mx;
     try {
@@ -164,6 +203,13 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
       companyProductsServices: raw.company_products_services
     });
     counts.after_stage3_classify++;
+
+    const facilityTalent = await enrichFacilityAndTalent({
+      companyNameNormalized,
+      companyDescription: raw.company_description,
+      companyProductsServices: raw.company_products_services,
+      title: raw.title
+    });
 
     let activeEmail = "";
     let emailSource: "csv" | "trykit" = "csv";
@@ -221,18 +267,17 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
       email: activeEmail,
       first_name: cleanText(raw.first_name) || undefined,
       last_name: cleanText(raw.last_name) || undefined,
+      // Plusvibe expects top-level location fields and nested custom_variables.
       company_name: companyNameNormalized || cleanText(raw.company_name) || undefined,
-      title: cleanText(raw.title) || undefined,
-      linkedin: cleanText(raw.linkedin) || undefined,
       company_website: cleanText(raw.company_website) || undefined,
-      company_linkedin: cleanText(raw.company_linkedin) || undefined,
-      company_size: cleanText(raw.company_size) || undefined,
-      company_industry: cleanText(raw.company_industry) || undefined,
-      company_type: companyType || undefined,
-      esp: mx.esp,
+      linkedin_person_url: cleanText(raw.linkedin) || undefined,
+      linkedin_company_url: cleanText(raw.company_linkedin) || undefined,
       city: cleanText(raw.city) || undefined,
-      state: cleanText(raw.state) || undefined,
-      country: cleanText(raw.country) || undefined
+      country: cleanText(raw.country) || undefined,
+      custom_variables: {
+        custom_talent_type: facilityTalent.talentType || "",
+        custom_facility_type: facilityTalent.facilityType || ""
+      }
     };
 
     const upload = await uploadLead(payload, route.target);
@@ -256,6 +301,8 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
       domain_settings: route.setting,
       company_name_normalized: companyNameNormalized,
       company_type: companyType,
+      facility_type: facilityTalent.facilityType,
+      talent_type: facilityTalent.talentType,
       plusvibe_workspace_id: route.target.workspaceId,
       plusvibe_campaign_id: route.target.campaignId,
       upload_ok: upload.ok,
@@ -371,6 +418,8 @@ function writeArtifacts(args: {
     company_name: cleanText(e.raw.company_name),
     company_name_normalized: e.company_name_normalized,
     company_type: e.company_type,
+    facility_type: e.facility_type,
+    talent_type: e.talent_type,
     esp_classification: e.esp_classification,
     domain_settings: e.domain_settings,
     email_source: e.email_source,
@@ -424,6 +473,14 @@ function writeArtifacts(args: {
     campaigns_used: {
       smtp: config.campaigns.smtp,
       catchAll: config.campaigns.catchAll
+    },
+    operator_report: {
+      processed: counts.input,
+      smtp_eligible: counts.smtp_eligible,
+      catchall_skipped: counts.catchall_skipped,
+      enriched: enriched.length,
+      uploaded: counts.uploaded_ok,
+      failed_by_reason: counts.drops_by_reason
     }
   };
   fs.writeFileSync(path.join(outDir, "run_summary.json"), JSON.stringify(summary, null, 2));
