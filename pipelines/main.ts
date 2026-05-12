@@ -368,32 +368,15 @@ function readLeadsCsv(p: string): LeadRow[] {
   return records;
 }
 
-function toSupabaseRow(e: EnrichedLead, icp: ICP, competitors: Competitor[]): SupabaseLeadRow {
+function toSupabaseRow(e: EnrichedLead, _icp: ICP, _competitors: Competitor[]): SupabaseLeadRow {
   const r = e.raw;
   return {
-    email: e.active_email,
-    first_name: cleanText(r.first_name) || null,
-    last_name: cleanText(r.last_name) || null,
-    title: cleanText(r.title) || null,
-    linkedin: cleanText(r.linkedin) || null,
-    city: cleanText(r.city) || null,
-    state: cleanText(r.state) || null,
-    country: cleanText(r.country) || null,
-    company_name: cleanText(r.company_name) || null,
-    company_name_normalized: e.company_name_normalized || null,
-    company_type: e.company_type || null,
-    company_size: cleanText(r.company_size) || null,
-    company_industry: cleanText(r.company_industry) || null,
-    company_website: cleanText(r.company_website) || null,
-    company_linkedin: cleanText(r.company_linkedin) || null,
-    esp_classification: e.esp_classification,
-    domain_settings: e.domain_settings,
-    email_source: e.email_source,
-    email_verification_status: e.email_verification_status,
-    plusvibe_workspace_id: e.plusvibe_workspace_id,
-    plusvibe_campaign_id: e.plusvibe_campaign_id,
-    icp_summary: icp.summary || null,
-    competitors: competitors.length > 0 ? JSON.stringify(competitors) : null
+    Email: e.active_email,
+    "First Name": cleanText(r.first_name) || null,
+    "Last Name": cleanText(r.last_name) || null,
+    Linkedin: cleanText(r.linkedin) || null,
+    "Company Name": cleanText(r.company_name) || null,
+    Website: cleanText(r.company_website) || null
   };
 }
 

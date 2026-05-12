@@ -1,0 +1,25 @@
+{
+  "vertical": "healthcare_csuite",
+  "company": {
+    "name": "Welltech",
+    "description": "Welltech runs outbound programs for healthcare leadership and facility operators."
+  },
+  "product": {
+    "name": "Welltech Outreach",
+    "description": "Lead enrichment and campaign delivery for C-suite and owner contacts in healthcare organizations."
+  },
+  "campaigns": {
+    "smtp": {
+      "workspaceId": "68cc548e33b6c342f85bd2d9",
+      "campaignId": "69f327d013e294cc4fd4a9da"
+    },
+    "catchAll": {
+      "workspaceId": "68cc548e33b6c342f85bd2d9",
+      "campaignId": "69f327d013e294cc4fd4a9da"
+    }
+  },
+  "limits": {
+    "openaiConcurrency": 5,
+    "uploadConcurrency": 3
+  }
+}

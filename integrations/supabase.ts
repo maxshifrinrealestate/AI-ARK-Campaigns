@@ -18,32 +18,14 @@ export function getSupabase(): SupabaseClient {
 
 export const SUPABASE_TABLE = process.env.SUPABASE_TABLE ?? "leads";
 
+/** Row shape for Supabase table `Lead Database` (matches user column names). */
 export type SupabaseLeadRow = {
-  email: string;
-  first_name?: string | null;
-  last_name?: string | null;
-  title?: string | null;
-  linkedin?: string | null;
-  city?: string | null;
-  state?: string | null;
-  country?: string | null;
-  company_name?: string | null;
-  company_name_normalized?: string | null;
-  company_type?: string | null;
-  company_size?: string | null;
-  company_industry?: string | null;
-  company_website?: string | null;
-  company_linkedin?: string | null;
-  esp_classification?: string | null;
-  domain_settings?: string | null;
-  email_source?: "csv" | "trykit" | null;
-  email_verification_status?: string | null;
-  plusvibe_workspace_id?: string | null;
-  plusvibe_campaign_id?: string | null;
-  icp_summary?: string | null;
-  competitors?: string | null;
-  created_at?: string;
-  updated_at?: string;
+  Email: string;
+  "First Name"?: string | null;
+  "Last Name"?: string | null;
+  Linkedin?: string | null;
+  "Company Name"?: string | null;
+  Website?: string | null;
 };
 
 export type UpsertReport = {
@@ -62,8 +44,8 @@ export async function upsertLeads(
   if (rows.length === 0) return report;
 
   const supabase = getSupabase();
-  const now = new Date().toISOString();
-  const stamped = rows.map((r) => ({ updated_at: now, ...r }));
+  const onConflict = process.env.SUPABASE_ON_CONFLICT ?? "Email";
+  const stamped = rows.map((r) => ({ ...r }));
 
   for (let i = 0; i < stamped.length; i += chunkSize) {
     const chunk = stamped.slice(i, i + chunkSize);
@@ -73,7 +55,7 @@ export async function upsertLeads(
         async () => {
           const { error } = await supabase
             .from(SUPABASE_TABLE)
-            .upsert(chunk, { onConflict: "email", ignoreDuplicates: false });
+            .upsert(chunk, { onConflict, ignoreDuplicates: false });
           if (error) {
             const status = (error as { status?: number }).status;
             const wrapped: Error & { status?: number } = new Error(error.message);
