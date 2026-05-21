@@ -1,5 +1,10 @@
-import { findEmailViaTryKitt } from "../integrations/trykitt.js";
-import { cleanText, domainFromWebsite } from "./classifyMx.js";
+import {
+  findEmailViaTryKitt,
+  findEmailsViaTryKittPool,
+  type TryKittPoolItem
+} from "../integrations/trykitt.js";
+import { cleanText } from "./classifyMx.js";
+import { resolveTryKittDomain } from "./classifyMx.js";
 
 export type FindEmailInput = {
   firstName?: string;
@@ -16,13 +21,14 @@ export type FindEmailResult = {
   domainUsed: string;
 };
 
+export function resolveFindEmailDomain(input: FindEmailInput): string {
+  return resolveTryKittDomain(input.companyWebsite);
+}
+
 export async function findEmail(input: FindEmailInput): Promise<FindEmailResult> {
   const firstName = cleanText(input.firstName);
   const lastName = cleanText(input.lastName);
-  let domain = domainFromWebsite(input.companyWebsite);
-  if (!domain) {
-    domain = domainFromCompanyLinkedin(input.companyLinkedin);
-  }
+  const domain = resolveFindEmailDomain(input);
 
   if (!firstName || !lastName || !domain) {
     return { email: null, domainUsed: domain };
@@ -39,10 +45,38 @@ export async function findEmail(input: FindEmailInput): Promise<FindEmailResult>
   return { email: result.email, domainUsed: domain };
 }
 
-function domainFromCompanyLinkedin(linkedin: unknown): string {
-  const v = cleanText(linkedin);
-  if (!v) return "";
-  const match = v.match(/linkedin\.com\/company\/([^\/?#]+)/i);
-  if (!match) return "";
-  return "";
+export type BatchFindEmailItem = FindEmailInput & { key: string | number };
+
+/** Parallel TryKitt submit + HTTP job polling for many leads at once. */
+export async function findEmailsBatch(
+  items: BatchFindEmailItem[],
+  opts?: { submitConcurrency?: number; pollConcurrency?: number }
+): Promise<Map<string | number, FindEmailResult>> {
+  const poolItems: TryKittPoolItem[] = [];
+  const domainByKey = new Map<string | number, string>();
+
+  for (const item of items) {
+    const firstName = cleanText(item.firstName);
+    const lastName = cleanText(item.lastName);
+    const domain = resolveFindEmailDomain(item);
+    domainByKey.set(item.key, domain);
+    if (!firstName || !lastName || !domain) continue;
+    poolItems.push({
+      key: item.key,
+      firstName,
+      lastName,
+      domain,
+      companyName: cleanText(item.companyName) || undefined,
+      linkedinUrl: cleanText(item.personLinkedin) || undefined
+    });
+  }
+
+  const raw = await findEmailsViaTryKittPool(poolItems, opts);
+  const mapped = new Map<string | number, FindEmailResult>();
+  for (const item of items) {
+    const domainUsed = domainByKey.get(item.key) ?? "";
+    const hit = raw.get(item.key);
+    mapped.set(item.key, { email: hit?.email ?? null, domainUsed });
+  }
+  return mapped;
 }

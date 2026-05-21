@@ -1,5 +1,7 @@
 import axios, { AxiosInstance } from "axios";
 import { withRetry } from "./openai.js";
+import { normalizeTryKittDomain } from "../functions/classifyMx.js";
+import { mapPool } from "../functions/mapPool.js";
 
 let client: AxiosInstance | null = null;
 
@@ -32,16 +34,116 @@ export type TryKittFindInput = {
 
 export type TryKittFindResult = {
   email: string | null;
+  jobId?: string | null;
   raw?: unknown;
 };
 
-const POLL_DELAYS_MS = [1000, 2000, 3000, 4000, 5000];
-const MAX_POLL_ATTEMPTS = 12;
+type PendingJob = {
+  key: string | number;
+  jobId: string;
+  input: TryKittFindInput;
+};
 
+type SubmitOutcome =
+  | { key: string | number; status: "resolved"; email: string; raw?: unknown }
+  | { key: string | number; status: "pending"; jobId: string; input: TryKittFindInput }
+  | { key: string | number; status: "failed"; raw?: unknown };
+
+const POLL_INTERVAL_MS = Number(process.env.TRYKITT_POLL_INTERVAL_MS) || 1500;
+const DEFAULT_SUBMIT_CONCURRENCY = Number(process.env.TRYKITT_SUBMIT_CONCURRENCY) || 20;
+const DEFAULT_POLL_CONCURRENCY = Number(process.env.TRYKITT_POLL_CONCURRENCY) || 25;
+const MAX_POLL_ROUNDS = Number(process.env.TRYKITT_MAX_POLL_ROUNDS) || 40;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Single-row find (uses parallel pool of 1). */
 export async function findEmailViaTryKitt(input: TryKittFindInput): Promise<TryKittFindResult> {
-  const { firstName, lastName, domain } = input;
+  const domain = normalizeTryKittDomain(input.domain);
+  const results = await findEmailsViaTryKittPool([{ key: 0, ...input, domain }], {
+    submitConcurrency: 1
+  });
+  return results.get(0) ?? { email: null };
+}
+
+export type TryKittPoolItem = TryKittFindInput & { key: string | number };
+
+export type TryKittPoolOptions = {
+  submitConcurrency?: number;
+  pollConcurrency?: number;
+  maxPollRounds?: number;
+};
+
+/**
+ * Submit many find_email jobs in parallel, then HTTP-poll GET /job?id=... in rounds
+ * until each job completes (TryKitt async job pattern).
+ */
+export async function findEmailsViaTryKittPool(
+  items: TryKittPoolItem[],
+  opts: TryKittPoolOptions = {}
+): Promise<Map<string | number, TryKittFindResult>> {
+  const out = new Map<string | number, TryKittFindResult>();
+  if (items.length === 0) return out;
+
+  const submitConcurrency = opts.submitConcurrency ?? DEFAULT_SUBMIT_CONCURRENCY;
+  const pollConcurrency = opts.pollConcurrency ?? DEFAULT_POLL_CONCURRENCY;
+  const maxPollRounds = opts.maxPollRounds ?? MAX_POLL_ROUNDS;
+
+  const submits = await mapPool(items, submitConcurrency, async (item) => submitFindEmailJob(item));
+
+  const pending: PendingJob[] = [];
+  for (const s of submits) {
+    if (s.status === "resolved") {
+      out.set(s.key, { email: s.email, raw: s.raw });
+    } else if (s.status === "pending") {
+      pending.push({ key: s.key, jobId: s.jobId, input: s.input });
+    } else {
+      out.set(s.key, { email: null, raw: s.raw });
+    }
+  }
+
+  if (pending.length > 0) {
+    console.log(`[trykitt] polling ${pending.length} jobs (interval=${POLL_INTERVAL_MS}ms)`);
+  }
+
+  for (let round = 0; round < maxPollRounds && pending.length > 0; round++) {
+    if (round > 0) await sleep(POLL_INTERVAL_MS);
+
+    const pollResults = await mapPool(pending, pollConcurrency, async (job) => {
+      const polled = await pollTryKittJob(job.jobId);
+      return { job, polled };
+    });
+
+    const stillPending: PendingJob[] = [];
+    for (const { job, polled } of pollResults) {
+      if (polled.email) {
+        out.set(job.key, { email: polled.email, jobId: job.jobId, raw: polled.raw });
+      } else if (polled.terminal) {
+        out.set(job.key, { email: null, jobId: job.jobId, raw: polled.raw });
+      } else {
+        stillPending.push(job);
+      }
+    }
+
+    pending.length = 0;
+    pending.push(...stillPending);
+  }
+
+  for (const job of pending) {
+    out.set(job.key, { email: null, jobId: job.jobId });
+    console.warn(`[trykitt] job ${job.jobId} timed out after ${maxPollRounds} poll rounds`);
+  }
+
+  return out;
+}
+
+async function submitFindEmailJob(item: TryKittPoolItem): Promise<SubmitOutcome> {
+  const domain = normalizeTryKittDomain(item.domain);
+  const firstName = item.firstName.trim();
+  const lastName = item.lastName.trim();
   if (!firstName || !lastName || !domain) {
-    return { email: null };
+    return { key: item.key, status: "failed" };
   }
 
   const fullName = `${firstName} ${lastName}`.trim();
@@ -53,51 +155,62 @@ export async function findEmailViaTryKitt(input: TryKittFindInput): Promise<TryK
         c.post("/job/find_email", {
           fullName,
           domain,
-          companyName: input.companyName || undefined,
-          linkedinStandardProfileURL: input.linkedinUrl || undefined,
-          realtime: true,
-          dataProviderFallback: true
+          companyName: item.companyName || undefined,
+          linkedinStandardProfileURL: item.linkedinUrl || undefined,
+          realtime: false,
+          fastMode: false,
+          dataProviderFallback: true,
+          discoverAlternativeDomains: true
         }),
-      { label: `trykitt.find_email ${domain}` }
+      { label: `trykitt.submit ${domain}` }
     );
 
-    const submitBody = submit.data;
-    if (isNoResultMarker(submitBody)) {
-      return { email: null, raw: submitBody };
+    const body = submit.data;
+    if (isNoResultMarker(body)) {
+      return { key: item.key, status: "failed", raw: body };
     }
 
-    const emailFromSubmit = extractEmail(submitBody);
-    if (emailFromSubmit) return { email: emailFromSubmit, raw: submitBody };
-
-    const jobId = extractJobId(submitBody);
-    if (!jobId) return { email: null, raw: submitBody };
-
-    await sleep(2000);
-    for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
-      await sleep(POLL_DELAYS_MS[Math.min(i, POLL_DELAYS_MS.length - 1)]!);
-      let jobRes;
-      try {
-        jobRes = await c.get("/job", { params: { id: jobId } });
-      } catch {
-        continue;
-      }
-      const terminal = isTerminalJob(jobRes.data);
-      const email = extractEmail(jobRes.data);
-      if (email) return { email, raw: jobRes.data };
-      if (terminal.failed) return { email: null, raw: jobRes.data };
-      if (terminal.done && !email) return { email: null, raw: jobRes.data };
+    const immediate = extractEmail(body);
+    if (immediate) {
+      return { key: item.key, status: "resolved", email: immediate, raw: body };
     }
 
-    return { email: null, raw: submit.data };
+    const jobId = extractJobId(body);
+    if (!jobId) {
+      return { key: item.key, status: "failed", raw: body };
+    }
+
+    return {
+      key: item.key,
+      status: "pending",
+      jobId,
+      input: { ...item, domain }
+    };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[trykitt] find failed for ${fullName} @ ${domain}: ${message}`);
-    return { email: null };
+    console.warn(`[trykitt] submit failed ${fullName} @ ${domain}: ${message}`);
+    return { key: item.key, status: "failed" };
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function pollTryKittJob(
+  jobId: string
+): Promise<{ email: string | null; terminal: boolean; raw?: unknown }> {
+  const c = getClient();
+  try {
+    const jobRes = await c.get("/job", { params: { id: jobId } });
+    const data = jobRes.data;
+    const email = extractEmail(data);
+    if (email) return { email, terminal: true, raw: data };
+
+    const terminal = isTerminalJob(data);
+    if (terminal.done) {
+      return { email: null, terminal: true, raw: data };
+    }
+    return { email: null, terminal: false, raw: data };
+  } catch {
+    return { email: null, terminal: false };
+  }
 }
 
 function extractJobId(data: unknown): string | null {

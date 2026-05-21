@@ -43,20 +43,52 @@ export function domainFromEmail(email: unknown): string {
   return e.split("@", 2)[1]!.trim().toLowerCase();
 }
 
+/**
+ * Normalize a website, URL, or host to a bare domain for TryKitt (no https/www/path).
+ */
+export function normalizeTryKittDomain(raw: unknown): string {
+  let s = cleanText(raw);
+  if (!s) return "";
+
+  if (s.includes("@")) {
+    return domainFromEmail(s);
+  }
+
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(s) && s.includes("/") && !s.startsWith("//")) {
+    const first = s.split("/")[0]!.trim();
+    if (first.includes(".")) s = first;
+  }
+
+  if (/^https?:\/\//i.test(s) || s.startsWith("//")) {
+    try {
+      const url = new URL(s.startsWith("//") ? `https:${s}` : s);
+      s = url.hostname;
+    } catch {
+      s = s.replace(/^[a-z]+:\/\//i, "").split(/[/?#]/)[0] ?? "";
+    }
+  } else {
+    s = s.split(/[/?#]/)[0] ?? s;
+  }
+
+  s = s.trim().toLowerCase();
+  if (s.startsWith("www.")) s = s.slice(4);
+  s = s.replace(/:\d+$/, "");
+  s = s.replace(/\.+$/, "");
+
+  if (!s || !s.includes(".")) return "";
+  if (!/^[a-z0-9]([a-z0-9-]*\.)+[a-z]{2,}$/i.test(s)) return "";
+
+  return s;
+}
+
+export function resolveTryKittDomain(companyWebsite: unknown, emailBusiness?: unknown): string {
+  const fromSite = normalizeTryKittDomain(companyWebsite);
+  if (fromSite) return fromSite;
+  return domainFromEmail(emailBusiness);
+}
+
 export function domainFromWebsite(website: unknown): string {
-  let w = cleanText(website);
-  if (!w) return "";
-  if (!/^https?:\/\//i.test(w)) {
-    w = "https://" + w;
-  }
-  try {
-    const url = new URL(w);
-    let host = url.host.toLowerCase();
-    if (host.startsWith("www.")) host = host.slice(4);
-    return host;
-  } catch {
-    return "";
-  }
+  return normalizeTryKittDomain(website);
 }
 
 export function resolveLeadDomain(emailBusiness: unknown, companyWebsite: unknown): string {

@@ -14,7 +14,7 @@ import {
 import { normalizeCompany } from "../functions/normalizeCompany.js";
 import { classifyCompanyType } from "../functions/classifyCompanyType.js";
 import { enrichFacilityAndTalent } from "../functions/enrichFacilityAndTalent.js";
-import { findEmail } from "../functions/findEmail.js";
+import { findEmail, findEmailsBatch, type FindEmailResult } from "../functions/findEmail.js";
 import { verifyEmail } from "../functions/verifyEmail.js";
 import { routeCampaign, type CampaignsConfig } from "../functions/routeCampaign.js";
 import { uploadLead, type PlusVibeLeadPayload } from "../integrations/plusvibe.js";
@@ -128,12 +128,25 @@ function mergeCounts(target: StageCounts, delta: Partial<StageCounts>): void {
   }
 }
 
+function leadNeedsTryKitt(raw: LeadRow, emptyEmailOnly?: boolean): boolean {
+  if (cleanText(raw.email_business)) return false;
+  const domainSettingRaw = cleanText(raw.domain_settings).toLowerCase().replace(/[^a-z]/g, "");
+  if (domainSettingRaw === "catchall") return false;
+  if (emptyEmailOnly && cleanText(raw.email_business)) return false;
+  const trykittEligible = domainSettingRaw === "";
+  return domainSettingRaw === "smtp" || trykittEligible;
+}
+
 async function processLeadRow(
   raw: LeadRow,
   config: FinanceConfig,
   globalIndex: number,
   batchTotal: number,
-  rowOpts: { emptyEmailOnly?: boolean } = {}
+  rowOpts: {
+    emptyEmailOnly?: boolean;
+    leadIndex?: number;
+    trykittCache?: Map<number, FindEmailResult>;
+  } = {}
 ): Promise<RowOutcome> {
   const tag = `[${globalIndex + 1}/${batchTotal}]`;
   const drop = (reason: RemovedLead["reason"], partial: Partial<StageCounts>, removed: RemovedLead): RowOutcome => ({
@@ -210,14 +223,18 @@ async function processLeadRow(
     activeEmail = emailBusiness.toLowerCase();
     emailSource = "csv";
   } else {
-    const found = await findEmail({
-      firstName: raw.first_name,
-      lastName: raw.last_name,
-      companyName: raw.company_name,
-      companyWebsite: raw.company_website,
-      companyLinkedin: raw.company_linkedin,
-      personLinkedin: raw.linkedin
-    });
+    const cached =
+      rowOpts.leadIndex !== undefined ? rowOpts.trykittCache?.get(rowOpts.leadIndex) : undefined;
+    const found =
+      cached ??
+      (await findEmail({
+        firstName: raw.first_name,
+        lastName: raw.last_name,
+        companyName: raw.company_name,
+        companyWebsite: raw.company_website,
+        companyLinkedin: raw.company_linkedin,
+        personLinkedin: raw.linkedin
+      }));
     if (!found.email) {
       return drop("no_email_found", base, {
         reason: "no_email_found",
@@ -411,6 +428,31 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
   const enriched: EnrichedLead[] = [];
   const uploadErrors: Array<{ email: string; campaign_id: string; error_message: string }> = [];
 
+  const trykittCache = new Map<number, FindEmailResult>();
+  const trykittBatchItems = leads
+    .map((raw, i) => ({ raw, i }))
+    .filter(({ raw }) => leadNeedsTryKitt(raw, opts.emptyEmailOnly))
+    .map(({ raw, i }) => ({
+      key: i,
+      firstName: raw.first_name,
+      lastName: raw.last_name,
+      companyName: raw.company_name,
+      companyWebsite: raw.company_website,
+      personLinkedin: raw.linkedin
+    }));
+
+  if (trykittBatchItems.length > 0) {
+    console.log(
+      `[pipeline] trykitt batch prefetch: ${trykittBatchItems.length} jobs (parallel submit + GET /job poll)`
+    );
+    const batchResults = await findEmailsBatch(trykittBatchItems);
+    for (const [key, result] of batchResults) {
+      trykittCache.set(Number(key), result);
+    }
+    const found = [...batchResults.values()].filter((r) => r.email).length;
+    console.log(`[pipeline] trykitt batch done: ${found}/${trykittBatchItems.length} emails found`);
+  }
+
   const rowConcurrency = Math.max(
     1,
     Number(process.env.ROW_CONCURRENCY) || config.limits?.openaiConcurrency || 8
@@ -420,7 +462,9 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
   let completed = 0;
   const outcomes = await mapPool(leads, rowConcurrency, async (raw, i) => {
     const outcome = await processLeadRow(raw, config, startRow + i, leadsAll.length, {
-      emptyEmailOnly: opts.emptyEmailOnly
+      emptyEmailOnly: opts.emptyEmailOnly,
+      leadIndex: i,
+      trykittCache
     });
     completed++;
     if (completed % 25 === 0) {
