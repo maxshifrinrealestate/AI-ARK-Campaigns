@@ -49,10 +49,11 @@ type SubmitOutcome =
   | { key: string | number; status: "pending"; jobId: string; input: TryKittFindInput }
   | { key: string | number; status: "failed"; raw?: unknown };
 
-const POLL_INTERVAL_MS = Number(process.env.TRYKITT_POLL_INTERVAL_MS) || 1500;
-const DEFAULT_SUBMIT_CONCURRENCY = Number(process.env.TRYKITT_SUBMIT_CONCURRENCY) || 20;
+const POLL_INTERVAL_MS = Number(process.env.TRYKITT_POLL_INTERVAL_MS) || 2000;
+const INITIAL_WAIT_MS = Number(process.env.TRYKITT_INITIAL_WAIT_MS) || 5000;
+const DEFAULT_SUBMIT_CONCURRENCY = Number(process.env.TRYKITT_SUBMIT_CONCURRENCY) || 15;
 const DEFAULT_POLL_CONCURRENCY = Number(process.env.TRYKITT_POLL_CONCURRENCY) || 25;
-const MAX_POLL_ROUNDS = Number(process.env.TRYKITT_MAX_POLL_ROUNDS) || 40;
+const MAX_POLL_ROUNDS = Number(process.env.TRYKITT_MAX_POLL_ROUNDS) || 80;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,7 +105,10 @@ export async function findEmailsViaTryKittPool(
   }
 
   if (pending.length > 0) {
-    console.log(`[trykitt] polling ${pending.length} jobs (interval=${POLL_INTERVAL_MS}ms)`);
+    console.log(
+      `[trykitt] polling ${pending.length} jobs after ${INITIAL_WAIT_MS}ms (interval=${POLL_INTERVAL_MS}ms, maxRounds=${maxPollRounds})`
+    );
+    await sleep(INITIAL_WAIT_MS);
   }
 
   for (let round = 0; round < maxPollRounds && pending.length > 0; round++) {
@@ -157,7 +161,7 @@ async function submitFindEmailJob(item: TryKittPoolItem): Promise<SubmitOutcome>
           domain,
           companyName: item.companyName || undefined,
           linkedinStandardProfileURL: item.linkedinUrl || undefined,
-          realtime: false,
+          realtime: true,
           fastMode: false,
           dataProviderFallback: true,
           discoverAlternativeDomains: true
