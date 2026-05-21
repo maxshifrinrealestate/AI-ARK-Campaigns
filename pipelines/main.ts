@@ -19,6 +19,7 @@ import { verifyEmail } from "../functions/verifyEmail.js";
 import { routeCampaign, type CampaignsConfig } from "../functions/routeCampaign.js";
 import { uploadLead, type PlusVibeLeadPayload } from "../integrations/plusvibe.js";
 import { upsertLeads, type SupabaseLeadRow } from "../integrations/supabase.js";
+import { mapPool } from "../functions/mapPool.js";
 
 export type FinanceConfig = {
   vertical: string;
@@ -33,6 +34,13 @@ export type PipelineOptions = {
   leadsPath: string;
   outDir: string;
   pilot?: number;
+  /** 0-based row index to resume from (for interrupted runs). */
+  startRow?: number;
+  /** Skip ICP/competitor OpenAI calls when resuming. */
+  skipIcp?: boolean;
+  /** Only rows with no email_business; TryKitt + MV, treat blank domain_settings as SMTP. */
+  emptyEmailOnly?: boolean;
+  continuationNote?: string;
 };
 
 type LeadRow = Record<string, string>;
@@ -83,6 +91,239 @@ type StageCounts = {
   drops_by_reason: Record<string, number>;
 };
 
+type RowOutcome =
+  | { kind: "removed"; removed: RemovedLead; counts: Partial<StageCounts> }
+  | {
+      kind: "enriched";
+      enriched: EnrichedLead;
+      counts: Partial<StageCounts>;
+      uploadError?: { email: string; campaign_id: string; error_message: string };
+    };
+
+type NumericCountKey = Exclude<keyof StageCounts, "drops_by_reason" | "input">;
+
+const COUNT_KEYS: NumericCountKey[] = [
+  "smtp_eligible",
+  "catchall_skipped",
+  "after_stage1_mx",
+  "after_stage2_normalize",
+  "after_stage3_classify",
+  "after_stage4_email",
+  "after_stage5_route",
+  "uploaded_ok",
+  "uploaded_failed",
+  "supabase_succeeded",
+  "supabase_failed"
+];
+
+function mergeCounts(target: StageCounts, delta: Partial<StageCounts>): void {
+  if (delta.drops_by_reason) {
+    for (const [reason, n] of Object.entries(delta.drops_by_reason)) {
+      target.drops_by_reason[reason] = (target.drops_by_reason[reason] ?? 0) + n;
+    }
+  }
+  for (const k of COUNT_KEYS) {
+    const v = delta[k];
+    if (typeof v === "number") target[k] += v;
+  }
+}
+
+async function processLeadRow(
+  raw: LeadRow,
+  config: FinanceConfig,
+  globalIndex: number,
+  batchTotal: number,
+  rowOpts: { emptyEmailOnly?: boolean } = {}
+): Promise<RowOutcome> {
+  const tag = `[${globalIndex + 1}/${batchTotal}]`;
+  const drop = (reason: RemovedLead["reason"], partial: Partial<StageCounts>, removed: RemovedLead): RowOutcome => ({
+    kind: "removed",
+    removed,
+    counts: { ...partial, drops_by_reason: { [reason]: 1 } }
+  });
+
+  const emailBusiness = cleanText(raw.email_business);
+  const companyWebsite = cleanText(raw.company_website);
+  const domain = resolveLeadDomain(emailBusiness, companyWebsite);
+  const domainSettingRaw = cleanText(raw.domain_settings).toLowerCase().replace(/[^a-z]/g, "");
+
+  const emptyEmailMode = rowOpts.emptyEmailOnly === true;
+
+  if (domainSettingRaw === "catchall") {
+    return drop("catchall_skipped", { catchall_skipped: 1 }, {
+      reason: "catchall_skipped",
+      email: emailBusiness,
+      domain,
+      raw,
+      detail: cleanText(raw.domain_settings)
+    });
+  }
+
+  if (emptyEmailMode && emailBusiness) {
+    return drop("unknown_domain_setting", {}, {
+      reason: "unknown_domain_setting",
+      email: emailBusiness,
+      domain,
+      raw,
+      detail: "empty-email-only run: row has Email Business"
+    });
+  }
+
+  // Blank domain_settings + missing Email Business → TryKitt path (treat as SMTP at route).
+  const trykittEligible = !emailBusiness && domainSettingRaw === "";
+  const domainEligible = domainSettingRaw === "smtp" || trykittEligible;
+  if (!domainEligible) {
+    return drop("unknown_domain_setting", {}, {
+      reason: "unknown_domain_setting",
+      email: emailBusiness,
+      domain,
+      raw,
+      detail: cleanText(raw.domain_settings)
+    });
+  }
+
+  const base: Partial<StageCounts> = { smtp_eligible: 1 };
+
+  let mx;
+  try {
+    mx = await classifyMx(domain);
+  } catch (err) {
+    console.warn(`${tag} stage1 mx error: ${(err as Error).message}`);
+    mx = { domain, mxData: "", esp: "empty" as const, isSeg: false };
+  }
+
+  if (mx.isSeg) {
+    return drop("security_gateway", base, {
+      reason: "security_gateway",
+      email: emailBusiness,
+      domain,
+      raw,
+      detail: mx.mxData
+    });
+  }
+
+  let activeEmail = "";
+  let emailSource: "csv" | "trykit" = "csv";
+  let verificationStatus: string | null = null;
+
+  if (emailBusiness) {
+    activeEmail = emailBusiness.toLowerCase();
+    emailSource = "csv";
+  } else {
+    const found = await findEmail({
+      firstName: raw.first_name,
+      lastName: raw.last_name,
+      companyName: raw.company_name,
+      companyWebsite: raw.company_website,
+      companyLinkedin: raw.company_linkedin,
+      personLinkedin: raw.linkedin
+    });
+    if (!found.email) {
+      return drop("no_email_found", base, {
+        reason: "no_email_found",
+        email: "",
+        domain: found.domainUsed || domain,
+        raw
+      });
+    }
+    const verify = await verifyEmail(found.email);
+    verificationStatus = verify.status;
+    if (!verify.accepted) {
+      return drop("email_unverified", base, {
+        reason: "email_unverified",
+        email: found.email,
+        domain: domainFromEmail(found.email),
+        raw,
+        detail: verify.status
+      });
+    }
+    activeEmail = found.email;
+    emailSource = "trykit";
+  }
+
+  const companyNameNormalized = await normalizeCompany(raw.company_name);
+  const companyType = await classifyCompanyType({
+    companyNameNormalized,
+    companyDescription: raw.company_description,
+    companyProductsServices: raw.company_products_services
+  });
+  const facilityTalent = await enrichFacilityAndTalent({
+    companyNameNormalized,
+    companyDescription: raw.company_description,
+    companyProductsServices: raw.company_products_services,
+    title: raw.title
+  });
+
+  const route = routeCampaign(raw.domain_settings, config.campaigns, {
+    treatEmptyAsSmtp: trykittEligible || emptyEmailMode || domainSettingRaw === ""
+  });
+  if (!route.ok) {
+    return drop("unknown_domain_setting", base, {
+      reason: "unknown_domain_setting",
+      email: activeEmail,
+      domain: domainFromEmail(activeEmail),
+      raw,
+      detail: route.rawValue
+    });
+  }
+
+  const payload: PlusVibeLeadPayload = {
+    email: activeEmail,
+    first_name: cleanText(raw.first_name) || undefined,
+    last_name: cleanText(raw.last_name) || undefined,
+    company_name: companyNameNormalized || cleanText(raw.company_name) || undefined,
+    company_website: cleanText(raw.company_website) || undefined,
+    linkedin_person_url: cleanText(raw.linkedin) || undefined,
+    linkedin_company_url: cleanText(raw.company_linkedin) || undefined,
+    city: cleanText(raw.city) || undefined,
+    country: cleanText(raw.country) || undefined,
+    custom_variables: {
+      custom_talent_type: facilityTalent.talentType || "",
+      custom_facility_type: facilityTalent.facilityType || ""
+    }
+  };
+
+  const upload = await uploadLead(payload, route.target);
+  const uploadError = upload.ok
+    ? undefined
+    : {
+        email: activeEmail,
+        campaign_id: route.target.campaignId,
+        error_message: upload.error
+      };
+
+  return {
+    kind: "enriched",
+    enriched: {
+      raw,
+      active_email: activeEmail,
+      email_source: emailSource,
+      email_verification_status: verificationStatus,
+      esp_classification: mx.esp,
+      domain_settings: route.setting,
+      company_name_normalized: companyNameNormalized,
+      company_type: companyType,
+      facility_type: facilityTalent.facilityType,
+      talent_type: facilityTalent.talentType,
+      plusvibe_workspace_id: route.target.workspaceId,
+      plusvibe_campaign_id: route.target.campaignId,
+      upload_ok: upload.ok,
+      upload_error: upload.ok ? undefined : upload.error
+    },
+    counts: {
+      ...base,
+      after_stage1_mx: 1,
+      after_stage2_normalize: 1,
+      after_stage3_classify: 1,
+      after_stage4_email: 1,
+      after_stage5_route: 1,
+      uploaded_ok: upload.ok ? 1 : 0,
+      uploaded_failed: upload.ok ? 0 : 1
+    },
+    uploadError
+  };
+}
+
 export async function runPipeline(opts: PipelineOptions): Promise<void> {
   fs.mkdirSync(opts.outDir, { recursive: true });
 
@@ -90,28 +331,59 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
   validateConfig(config);
 
   const leadsAll = readLeadsCsv(opts.leadsPath);
-  const leads = opts.pilot && opts.pilot > 0 ? leadsAll.slice(0, opts.pilot) : leadsAll;
+  const startRow = opts.startRow ?? 0;
+  let pool = leadsAll;
+  if (opts.emptyEmailOnly) {
+    const before = pool.length;
+    pool = pool.filter((r) => !cleanText(r.email_business));
+    console.log(
+      `[pipeline] empty-email-only: ${pool.length}/${before} rows (no Email Business)`
+    );
+  }
+  let leads = startRow > 0 ? pool.slice(startRow) : pool;
+  if (opts.pilot && opts.pilot > 0) {
+    leads = leads.slice(0, opts.pilot);
+  }
 
   console.log(`[pipeline] loaded ${leadsAll.length} leads from ${opts.leadsPath}`);
-  if (opts.pilot) console.log(`[pipeline] pilot mode: processing first ${leads.length}`);
+  if (opts.emptyEmailOnly) {
+    console.log(`[pipeline] mode=trykitt+millionverifier for missing Email Business`);
+  }
+  if (startRow > 0) {
+    console.log(
+      `[pipeline] resume: starting at row ${startRow} (${leads.length} rows in this batch)`
+    );
+  }
+  if (opts.pilot) {
+    console.log(`[pipeline] pilot/shard limit: processing ${leads.length} rows in this batch`);
+  }
+  if (opts.continuationNote) console.log(`[pipeline] ${opts.continuationNote}`);
 
-  console.log(`[pipeline] generating ICP for vertical=${config.vertical}`);
-  const icp: ICP = await findICP({
-    companyName: config.company.name,
-    companyDescription: config.company.description,
-    productName: config.product.name,
-    productDescription: config.product.description
-  });
-  console.log(`[pipeline] ICP: ${icp.summary || "(empty)"}`);
+  let icp: ICP;
+  let competitors: Competitor[];
+  if (opts.skipIcp) {
+    icp = { industries: [], titles: [], company_size_ranges: [], pains: [], geographies: [], summary: "" };
+    competitors = [];
+    console.log(`[pipeline] skip-icp: skipping ICP and competitor generation`);
+  } else {
+    console.log(`[pipeline] generating ICP for vertical=${config.vertical}`);
+    icp = await findICP({
+      companyName: config.company.name,
+      companyDescription: config.company.description,
+      productName: config.product.name,
+      productDescription: config.product.description
+    });
+    console.log(`[pipeline] ICP: ${icp.summary || "(empty)"}`);
 
-  console.log(`[pipeline] finding competitors via web_search`);
-  const competitors: Competitor[] = await findCompetitors({
-    icp,
-    productName: config.product.name,
-    productDescription: config.product.description,
-    vendorCompanyName: config.company.name
-  });
-  console.log(`[pipeline] competitors: ${competitors.map((c) => c.name).join(", ") || "(none)"}`);
+    console.log(`[pipeline] finding competitors via web_search`);
+    competitors = await findCompetitors({
+      icp,
+      productName: config.product.name,
+      productDescription: config.product.description,
+      vendorCompanyName: config.company.name
+    });
+    console.log(`[pipeline] competitors: ${competitors.map((c) => c.name).join(", ") || "(none)"}`);
+  }
 
   const counts: StageCounts = {
     input: leads.length,
@@ -139,180 +411,33 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
   const enriched: EnrichedLead[] = [];
   const uploadErrors: Array<{ email: string; campaign_id: string; error_message: string }> = [];
 
-  for (let i = 0; i < leads.length; i++) {
-    const raw = leads[i]!;
-    const tag = `[${i + 1}/${leads.length}]`;
+  const rowConcurrency = Math.max(
+    1,
+    Number(process.env.ROW_CONCURRENCY) || config.limits?.openaiConcurrency || 8
+  );
+  console.log(`[pipeline] parallel row processing: concurrency=${rowConcurrency}`);
 
-    const emailBusiness = cleanText(raw.email_business);
-    const companyWebsite = cleanText(raw.company_website);
-    const domain = resolveLeadDomain(emailBusiness, companyWebsite);
-    const domainSettingRaw = cleanText(raw.domain_settings).toLowerCase().replace(/[^a-z]/g, "");
-
-    if (domainSettingRaw === "catchall") {
-      removed.push({
-        reason: "catchall_skipped",
-        email: emailBusiness,
-        domain,
-        raw,
-        detail: cleanText(raw.domain_settings)
-      });
-      counts.catchall_skipped++;
-      counts.drops_by_reason.catchall_skipped++;
-      continue;
-    }
-    if (domainSettingRaw !== "smtp") {
-      removed.push({
-        reason: "unknown_domain_setting",
-        email: emailBusiness,
-        domain,
-        raw,
-        detail: cleanText(raw.domain_settings)
-      });
-      counts.drops_by_reason.unknown_domain_setting++;
-      continue;
-    }
-    counts.smtp_eligible++;
-
-    let mx;
-    try {
-      mx = await classifyMx(domain);
-    } catch (err) {
-      console.warn(`${tag} stage1 mx error: ${(err as Error).message}`);
-      mx = { domain, mxData: "", esp: "empty" as const, isSeg: false };
-    }
-
-    if (mx.isSeg) {
-      removed.push({
-        reason: "security_gateway",
-        email: emailBusiness,
-        domain,
-        raw,
-        detail: mx.mxData
-      });
-      counts.drops_by_reason.security_gateway++;
-      continue;
-    }
-    counts.after_stage1_mx++;
-
-    const companyNameNormalized = await normalizeCompany(raw.company_name);
-    counts.after_stage2_normalize++;
-
-    const companyType = await classifyCompanyType({
-      companyNameNormalized,
-      companyDescription: raw.company_description,
-      companyProductsServices: raw.company_products_services
+  let completed = 0;
+  const outcomes = await mapPool(leads, rowConcurrency, async (raw, i) => {
+    const outcome = await processLeadRow(raw, config, startRow + i, leadsAll.length, {
+      emptyEmailOnly: opts.emptyEmailOnly
     });
-    counts.after_stage3_classify++;
-
-    const facilityTalent = await enrichFacilityAndTalent({
-      companyNameNormalized,
-      companyDescription: raw.company_description,
-      companyProductsServices: raw.company_products_services,
-      title: raw.title
-    });
-
-    let activeEmail = "";
-    let emailSource: "csv" | "trykit" = "csv";
-    let verificationStatus: string | null = null;
-
-    if (emailBusiness) {
-      activeEmail = emailBusiness.toLowerCase();
-      emailSource = "csv";
-      verificationStatus = null;
-    } else {
-      const found = await findEmail({
-        firstName: raw.first_name,
-        lastName: raw.last_name,
-        companyWebsite: raw.company_website,
-        companyLinkedin: raw.company_linkedin
-      });
-      if (!found.email) {
-        removed.push({ reason: "no_email_found", email: "", domain: found.domainUsed || domain, raw });
-        counts.drops_by_reason.no_email_found++;
-        continue;
-      }
-      const verify = await verifyEmail(found.email);
-      verificationStatus = verify.status;
-      if (!verify.accepted) {
-        removed.push({
-          reason: "email_unverified",
-          email: found.email,
-          domain: domainFromEmail(found.email),
-          raw,
-          detail: verify.status
-        });
-        counts.drops_by_reason.email_unverified++;
-        continue;
-      }
-      activeEmail = found.email;
-      emailSource = "trykit";
-    }
-    counts.after_stage4_email++;
-
-    const route = routeCampaign(raw.domain_settings, config.campaigns);
-    if (!route.ok) {
-      removed.push({
-        reason: "unknown_domain_setting",
-        email: activeEmail,
-        domain: domainFromEmail(activeEmail),
-        raw,
-        detail: route.rawValue
-      });
-      counts.drops_by_reason.unknown_domain_setting++;
-      continue;
-    }
-    counts.after_stage5_route++;
-
-    const payload: PlusVibeLeadPayload = {
-      email: activeEmail,
-      first_name: cleanText(raw.first_name) || undefined,
-      last_name: cleanText(raw.last_name) || undefined,
-      // Plusvibe expects top-level location fields and nested custom_variables.
-      company_name: companyNameNormalized || cleanText(raw.company_name) || undefined,
-      company_website: cleanText(raw.company_website) || undefined,
-      linkedin_person_url: cleanText(raw.linkedin) || undefined,
-      linkedin_company_url: cleanText(raw.company_linkedin) || undefined,
-      city: cleanText(raw.city) || undefined,
-      country: cleanText(raw.country) || undefined,
-      custom_variables: {
-        custom_talent_type: facilityTalent.talentType || "",
-        custom_facility_type: facilityTalent.facilityType || ""
-      }
-    };
-
-    const upload = await uploadLead(payload, route.target);
-    if (upload.ok) {
-      counts.uploaded_ok++;
-    } else {
-      counts.uploaded_failed++;
-      uploadErrors.push({
-        email: activeEmail,
-        campaign_id: route.target.campaignId,
-        error_message: upload.error
-      });
-    }
-
-    enriched.push({
-      raw,
-      active_email: activeEmail,
-      email_source: emailSource,
-      email_verification_status: verificationStatus,
-      esp_classification: mx.esp,
-      domain_settings: route.setting,
-      company_name_normalized: companyNameNormalized,
-      company_type: companyType,
-      facility_type: facilityTalent.facilityType,
-      talent_type: facilityTalent.talentType,
-      plusvibe_workspace_id: route.target.workspaceId,
-      plusvibe_campaign_id: route.target.campaignId,
-      upload_ok: upload.ok,
-      upload_error: upload.ok ? undefined : upload.error
-    });
-
-    if ((i + 1) % 25 === 0) {
+    completed++;
+    if (completed % 25 === 0) {
       console.log(
-        `${tag} progress: enriched=${enriched.length} removed=${removed.length} upload_ok=${counts.uploaded_ok}`
+        `[${completed}/${leads.length}] batch progress (global ~${startRow + completed}/${leadsAll.length})`
       );
+    }
+    return outcome;
+  });
+
+  for (const outcome of outcomes) {
+    mergeCounts(counts, outcome.counts);
+    if (outcome.kind === "removed") {
+      removed.push(outcome.removed);
+    } else {
+      enriched.push(outcome.enriched);
+      if (outcome.uploadError) uploadErrors.push(outcome.uploadError);
     }
   }
 
@@ -331,7 +456,10 @@ export async function runPipeline(opts: PipelineOptions): Promise<void> {
     icp,
     competitors,
     config,
-    supReport
+    supReport,
+    totalRowsInFile: leadsAll.length,
+    startRow,
+    continuationNote: opts.continuationNote
   });
 
   console.log(`[pipeline] done. artifacts in ${opts.outDir}`);
@@ -390,8 +518,24 @@ function writeArtifacts(args: {
   competitors: Competitor[];
   config: FinanceConfig;
   supReport: { attempted: number; succeeded: number; failed: number; errors: Array<{ chunk: number; message: string }> };
+  totalRowsInFile: number;
+  startRow: number;
+  continuationNote?: string;
 }): void {
-  const { outDir, enriched, removed, uploadErrors, counts, icp, competitors, config, supReport } = args;
+  const {
+    outDir,
+    enriched,
+    removed,
+    uploadErrors,
+    counts,
+    icp,
+    competitors,
+    config,
+    supReport,
+    totalRowsInFile,
+    startRow,
+    continuationNote
+  } = args;
 
   const enrichedRows = enriched.map((e) => ({
     email: e.active_email,
@@ -449,6 +593,9 @@ function writeArtifacts(args: {
   const summary = {
     timestamp: new Date().toISOString(),
     vertical: config.vertical,
+    total_rows_in_file: totalRowsInFile,
+    start_row: startRow,
+    continuation_note: continuationNote ?? null,
     counts,
     supabase: supReport,
     icp,
@@ -458,7 +605,7 @@ function writeArtifacts(args: {
       catchAll: config.campaigns.catchAll
     },
     operator_report: {
-      processed: counts.input,
+      processed_this_batch: counts.input,
       smtp_eligible: counts.smtp_eligible,
       catchall_skipped: counts.catchall_skipped,
       enriched: enriched.length,

@@ -1,0 +1,25 @@
+{
+  "vertical": "healthcare_csuite_snf",
+  "company": {
+    "name": "Welltech",
+    "description": "Welltech runs outbound programs for healthcare leadership and SNF operators."
+  },
+  "product": {
+    "name": "Welltech Outreach",
+    "description": "Lead enrichment and campaign delivery for C-suite contacts in skilled nursing facilities."
+  },
+  "campaigns": {
+    "smtp": {
+      "workspaceId": "68cc548e33b6c342f85bd2d9",
+      "campaignId": "69f327d013e294cc4fd4a9da"
+    },
+    "catchAll": {
+      "workspaceId": "68cc548e33b6c342f85bd2d9",
+      "campaignId": "69f327d013e294cc4fd4a9da"
+    }
+  },
+  "limits": {
+    "openaiConcurrency": 5,
+    "uploadConcurrency": 3
+  }
+}

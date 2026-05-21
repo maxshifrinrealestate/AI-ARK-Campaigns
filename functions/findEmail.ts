@@ -4,8 +4,11 @@ import { cleanText, domainFromWebsite } from "./classifyMx.js";
 export type FindEmailInput = {
   firstName?: string;
   lastName?: string;
+  companyName?: string;
   companyWebsite?: string;
   companyLinkedin?: string;
+  /** Person LinkedIn URL (TryKitt `linkedinStandardProfileURL`). */
+  personLinkedin?: string;
 };
 
 export type FindEmailResult = {
@@ -25,7 +28,14 @@ export async function findEmail(input: FindEmailInput): Promise<FindEmailResult>
     return { email: null, domainUsed: domain };
   }
 
-  const result = await findEmailViaTryKitt({ firstName, lastName, domain });
+  const personLinkedin = cleanText(input.personLinkedin);
+  const result = await findEmailViaTryKitt({
+    firstName,
+    lastName,
+    domain,
+    companyName: cleanText(input.companyName) || undefined,
+    linkedinUrl: personLinkedin || undefined
+  });
   return { email: result.email, domainUsed: domain };
 }
 

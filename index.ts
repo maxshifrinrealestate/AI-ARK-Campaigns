@@ -28,6 +28,9 @@ type CliArgs = {
   config: string;
   leads: string;
   pilot?: number;
+  start?: number;
+  skipIcp?: boolean;
+  emptyEmailOnly?: boolean;
 };
 
 function parseArgs(argv: string[]): CliArgs {
@@ -57,6 +60,20 @@ function parseArgs(argv: string[]): CliArgs {
         }
         i++;
         break;
+      case "--start":
+        if (!next) throw new Error("--start requires a number");
+        args.start = Number(next);
+        if (!Number.isFinite(args.start) || args.start < 0) {
+          throw new Error("--start must be a non-negative integer (0-based row index)");
+        }
+        i++;
+        break;
+      case "--skip-icp":
+        args.skipIcp = true;
+        break;
+      case "--empty-email-only":
+        args.emptyEmailOnly = true;
+        break;
       case "--help":
       case "-h":
         printHelp();
@@ -75,12 +92,15 @@ function printHelp(): void {
       "lead-engine",
       "",
       "Usage:",
-      "  npm start -- --config <path> --leads <path> [--pilot N]",
+      "  npm start -- --config <path> --leads <path> [--pilot N] [--start N] [--skip-icp] [--empty-email-only]",
       "",
       "Flags:",
       "  --config   Path to campaign config JSON (default: configs/finance.json)",
       "  --leads    Path to input leads CSV     (default: data/leads.csv)",
       "  --pilot N  Process only the first N leads (runbook \u00a78 step 2)",
+      "  --start N  Resume at 0-based row index N (for interrupted runs)",
+      "  --skip-icp Skip ICP/competitor generation (use when resuming)",
+      "  --empty-email-only  Only rows missing Email Business (TryKitt + MV; blank domain -> SMTP)",
       "",
       "Required env vars (runbook \u00a73):",
       "  " + REQUIRED_KEYS.join(", ")
@@ -126,16 +146,27 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   startupGate(args);
 
-  const outDir = path.resolve(`run_outputs_${timestamp()}`);
+  const outDir = process.env.OUT_DIR
+    ? path.resolve(process.env.OUT_DIR)
+    : path.resolve(`run_outputs_${timestamp()}`);
   console.log(`[lead-engine] starting run`);
   console.log(`[lead-engine] config=${args.config} leads=${args.leads} outDir=${outDir}`);
   if (args.pilot) console.log(`[lead-engine] pilot=${args.pilot}`);
+  if (args.start) console.log(`[lead-engine] start=${args.start}`);
+  if (args.skipIcp) console.log(`[lead-engine] skip-icp=true`);
+  if (args.emptyEmailOnly) console.log(`[lead-engine] empty-email-only=true`);
 
   await runPipeline({
     configPath: args.config,
     leadsPath: args.leads,
     outDir,
-    pilot: args.pilot
+    pilot: args.pilot,
+    startRow: args.start,
+    skipIcp: args.skipIcp,
+    emptyEmailOnly: args.emptyEmailOnly,
+    continuationNote: args.start
+      ? `Resumed at row ${args.start}; prior segment had ~1581 Plusvibe uploads before interruption.`
+      : undefined
   });
 }
 
