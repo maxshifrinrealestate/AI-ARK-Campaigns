@@ -10,7 +10,9 @@
     "dev": "tsx watch index.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json",
-    "shards": "tsx scripts/run-parallel-shards.ts"
+    "shards": "tsx scripts/run-parallel-shards.ts",
+    "validate:csv": "tsx scripts/validate-leads-csv.ts",
+    "run:healthcare": "bash scripts/run-healthcare-upload.sh"
   },
   "engines": {
     "node": ">=20.0.0"
