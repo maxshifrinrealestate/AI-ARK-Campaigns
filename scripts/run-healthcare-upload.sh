@@ -15,8 +15,23 @@ if [[ ! -f "$LEADS" ]]; then
   exit 1
 fi
 
-if [[ ! -f .env ]]; then
-  echo "Missing .env — copy .env.example to .env and fill all 6 required API keys."
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+REQUIRED_KEYS=(OPENAI_API_KEY TRYKITT_API_KEY MILLIONVERIFIER_API_KEY PLUSVIBE_KEY SUPABASE_URL SUPABASE_KEY)
+missing_keys=()
+for key in "${REQUIRED_KEYS[@]}"; do
+  if [[ -z "${!key:-}" ]]; then
+    missing_keys+=("$key")
+  fi
+done
+if [[ ${#missing_keys[@]} -gt 0 ]]; then
+  echo "Missing API keys: ${missing_keys[*]}"
+  echo "Add them in Cursor Dashboard → Cloud Agents → Secrets, or copy .env.example to .env"
   exit 1
 fi
 
