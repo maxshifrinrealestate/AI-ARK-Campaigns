@@ -18,13 +18,21 @@ export type RouteCampaignOptions = {
   treatEmptyAsSmtp?: boolean;
 };
 
+/** Maps sheet values like SMTP_VALID / CATCH_ALL_VALID to smtp / catchall. */
+export function normalizeDomainSettingRaw(rawDomainSetting: unknown): string {
+  const norm = cleanText(rawDomainSetting).toLowerCase().replace(/[^a-z]/g, "");
+  if (norm.startsWith("smtp")) return "smtp";
+  if (norm.startsWith("catchall")) return "catchall";
+  return norm;
+}
+
 export function routeCampaign(
   rawDomainSetting: unknown,
   config: CampaignsConfig,
   opts: RouteCampaignOptions = {}
 ): RouteResult {
   const raw = cleanText(rawDomainSetting);
-  const norm = raw.toLowerCase().replace(/[^a-z]/g, "");
+  const norm = normalizeDomainSettingRaw(rawDomainSetting);
   if (norm === "smtp") {
     return { ok: true, setting: "SMTP", target: config.smtp };
   }

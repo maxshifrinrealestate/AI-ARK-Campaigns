@@ -32,7 +32,10 @@ function normalizeHeader(header: string): string {
 }
 
 function normalizeDomainSetting(raw: string): string {
-  return raw.trim().toLowerCase().replace(/[^a-z]/g, "");
+  const norm = raw.trim().toLowerCase().replace(/[^a-z]/g, "");
+  if (norm.startsWith("smtp")) return "smtp";
+  if (norm.startsWith("catchall")) return "catchall";
+  return norm;
 }
 
 function main(): void {
@@ -52,7 +55,9 @@ function main(): void {
   }) as Record<string, string>[];
 
   const headers = records.length > 0 ? Object.keys(records[0]!) : [];
-  const missing = EXPECTED_COLUMNS.filter((col) => !headers.includes(col));
+  const aliasHeaders = new Set(headers);
+  if (aliasHeaders.has("company_product_and_services")) aliasHeaders.add("company_products_services");
+  const missing = EXPECTED_COLUMNS.filter((col) => !aliasHeaders.has(col));
   const extra = headers.filter((col) => !EXPECTED_COLUMNS.includes(col as (typeof EXPECTED_COLUMNS)[number]));
 
   const domainCounts = { smtp: 0, catchall: 0, blank: 0, other: 0 };
