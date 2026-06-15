@@ -16,7 +16,11 @@ import { classifyCompanyType } from "../functions/classifyCompanyType.js";
 import { enrichFacilityAndTalent } from "../functions/enrichFacilityAndTalent.js";
 import { findEmail, findEmailsBatch, type FindEmailResult } from "../functions/findEmail.js";
 import { verifyEmail } from "../functions/verifyEmail.js";
-import { routeCampaign, type CampaignsConfig } from "../functions/routeCampaign.js";
+import {
+  normalizeDomainSettingRaw,
+  routeCampaign,
+  type CampaignsConfig
+} from "../functions/routeCampaign.js";
 import { uploadLead, type PlusVibeLeadPayload } from "../integrations/plusvibe.js";
 import { upsertLeads, type SupabaseLeadRow } from "../integrations/supabase.js";
 import { mapPool } from "../functions/mapPool.js";
@@ -130,7 +134,7 @@ function mergeCounts(target: StageCounts, delta: Partial<StageCounts>): void {
 
 function leadNeedsTryKitt(raw: LeadRow, emptyEmailOnly?: boolean): boolean {
   if (cleanText(raw.email_business)) return false;
-  const domainSettingRaw = cleanText(raw.domain_settings).toLowerCase().replace(/[^a-z]/g, "");
+  const domainSettingRaw = normalizeDomainSettingRaw(raw.domain_settings);
   if (domainSettingRaw === "catchall") return false;
   if (emptyEmailOnly && cleanText(raw.email_business)) return false;
   const trykittEligible = domainSettingRaw === "";
@@ -158,7 +162,7 @@ async function processLeadRow(
   const emailBusiness = cleanText(raw.email_business);
   const companyWebsite = cleanText(raw.company_website);
   const domain = resolveLeadDomain(emailBusiness, companyWebsite);
-  const domainSettingRaw = cleanText(raw.domain_settings).toLowerCase().replace(/[^a-z]/g, "");
+  const domainSettingRaw = normalizeDomainSettingRaw(raw.domain_settings);
 
   const emptyEmailMode = rowOpts.emptyEmailOnly === true;
 
@@ -184,7 +188,8 @@ async function processLeadRow(
 
   // Blank domain_settings + missing Email Business → TryKitt path (treat as SMTP at route).
   const trykittEligible = !emailBusiness && domainSettingRaw === "";
-  const domainEligible = domainSettingRaw === "smtp" || trykittEligible;
+  const domainEligible =
+    domainSettingRaw === "smtp" || trykittEligible || (emailBusiness && domainSettingRaw === "");
   if (!domainEligible) {
     return drop("unknown_domain_setting", {}, {
       reason: "unknown_domain_setting",
@@ -537,6 +542,11 @@ function readLeadsCsv(p: string): LeadRow[] {
     trim: true,
     bom: true
   }) as LeadRow[];
+  for (const row of records) {
+    if (!row.company_products_services && row.company_product_and_services) {
+      row.company_products_services = row.company_product_and_services;
+    }
+  }
   return records;
 }
 
