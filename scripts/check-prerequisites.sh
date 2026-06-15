@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-LEADS="${LEADS_PATH:-data/csuite_healthcare_jun10.csv}"
+LEADS="${LEADS_PATH:-data/healthcare_founders_owners_netnew_5000.csv}"
 REQUIRED_KEYS=(OPENAI_API_KEY TRYKITT_API_KEY MILLIONVERIFIER_API_KEY PLUSVIBE_KEY SUPABASE_URL SUPABASE_KEY)
 
 if [[ -f .env ]]; then
@@ -45,6 +45,6 @@ fi
 
 echo ""
 echo "Not ready. For Cloud Agent Option B:"
-echo "  1. Attach CSV to the agent prompt (or commit to data/csuite_healthcare_jun10.csv)"
+echo "  1. Share a Google Sheets link, or commit CSV to data/healthcare_founders_owners_netnew_5000.csv"
 echo "  2. Add secrets in Cursor Settings → Cloud Agents → Secrets"
 exit 1

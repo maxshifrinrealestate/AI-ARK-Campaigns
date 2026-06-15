@@ -5,13 +5,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 CONFIG="configs/welltech_csuite_healthcare.json"
-LEADS="${LEADS_PATH:-data/csuite_healthcare_jun10.csv}"
+LEADS="${LEADS_PATH:-data/healthcare_founders_owners_netnew_5000.csv}"
 PILOT_ONLY="${PILOT_ONLY:-0}"
 PILOT_SIZE="${PILOT_SIZE:-25}"
 
 if [[ ! -f "$LEADS" ]]; then
   echo "Leads CSV not found: $LEADS"
-  echo "Set LEADS_PATH or copy your file to data/csuite_healthcare_jun10.csv"
+  echo "Set LEADS_PATH or copy your file to data/healthcare_founders_owners_netnew_5000.csv"
   exit 1
 fi
 
