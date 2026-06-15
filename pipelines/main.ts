@@ -188,7 +188,8 @@ async function processLeadRow(
 
   // Blank domain_settings + missing Email Business → TryKitt path (treat as SMTP at route).
   const trykittEligible = !emailBusiness && domainSettingRaw === "";
-  const domainEligible = domainSettingRaw === "smtp" || trykittEligible;
+  const domainEligible =
+    domainSettingRaw === "smtp" || trykittEligible || (emailBusiness && domainSettingRaw === "");
   if (!domainEligible) {
     return drop("unknown_domain_setting", {}, {
       reason: "unknown_domain_setting",
