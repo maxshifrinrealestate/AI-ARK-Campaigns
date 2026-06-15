@@ -25,8 +25,9 @@ async function main(): Promise<void> {
   // npm on Windows may drop named flags; accept positional: config leads [start] [shards]
   const config = arg("--config") ?? process.argv[2];
   const leads = arg("--leads") ?? process.argv[3];
-  const start = Number(arg("--start") ?? process.argv[4] ?? "0");
-  const shards = Number(arg("--shards") ?? process.argv[5] ?? "4");
+  const usingPositional = !arg("--config") && !arg("--leads") && Boolean(process.argv[2] && process.argv[3]);
+  const start = Number(arg("--start") ?? (usingPositional ? process.argv[4] : "0") ?? "0");
+  const shards = Number(arg("--shards") ?? (usingPositional ? process.argv[5] : "8") ?? "8");
   const emptyEmailOnly = process.argv.includes("--empty-email-only");
   if (!config || !leads) {
     throw new Error("Requires --config and --leads");
