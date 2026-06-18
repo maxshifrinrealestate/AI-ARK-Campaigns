@@ -100,7 +100,8 @@ async function run(): Promise<void> {
       talent_type: talentType,
       email_body: result.body,
       word_count: String(result.wordCount),
-      cta_style: result.ctaStyle
+      cta_style: result.ctaStyle,
+      opener_style: result.openerStyle
     };
   });
 
