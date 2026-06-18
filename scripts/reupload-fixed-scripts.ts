@@ -47,9 +47,14 @@ async function run(): Promise<void> {
   }) as Array<Record<string, string>>;
 
   const byEmail = new Map<string, Record<string, string>>();
+  const byPerson = new Map<string, Record<string, string>>();
   for (const row of allLeads) {
     const email = cleanText(row.email_business).toLowerCase();
     if (email) byEmail.set(email, row);
+    byPerson.set(
+      `${cleanText(row.first_name).toLowerCase()}|${cleanText(row.last_name).toLowerCase()}|${cleanText(row.company_name).toLowerCase()}`,
+      row
+    );
   }
 
   const concurrency = Math.max(1, Number(process.env.ROW_CONCURRENCY) || 12);
@@ -63,7 +68,12 @@ async function run(): Promise<void> {
 
   const results = await mapPool(uploadedRows, concurrency, async (u, i) => {
     const email = cleanText(u.email).toLowerCase();
-    const raw = byEmail.get(email);
+    let raw = byEmail.get(email);
+    if (!raw) {
+      raw = byPerson.get(
+        `${cleanText(u.first_name).toLowerCase()}|${cleanText(u.last_name).toLowerCase()}|${cleanText(u.company_name).toLowerCase()}`
+      );
+    }
     if (!raw) {
       failed++;
       return { email, ok: false, error: "lead_not_in_source_csv" };

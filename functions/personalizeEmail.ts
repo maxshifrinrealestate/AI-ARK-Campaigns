@@ -68,7 +68,7 @@ const CTA_STYLES = [
   "Would hires in this specialty be relevant for you right now?",
   "Is this the type of talent you're actively looking for?",
   "Any plans to grow the bench in this area soon?",
-  "Would candidates in this lane be useful for what you're building?",
+  "Would engineers like this be useful for what you're building?",
   "Are you exploring hires in this space this half?",
   "Is headcount growth here something you're thinking about?",
   "Would this skill set be on your radar for future roles?",
