@@ -1,0 +1,25 @@
+{
+  "vertical": "tech_ai",
+  "company": {
+    "name": "Welltech",
+    "description": "Welltech runs outbound programs for tech and AI leadership hiring."
+  },
+  "product": {
+    "name": "Welltech Outreach",
+    "description": "Lead enrichment, personalized outreach, and campaign delivery for tech founders and executives."
+  },
+  "campaigns": {
+    "smtp": {
+      "workspaceId": "694c1ae9ebef3b84192da7fc",
+      "campaignId": "6a339841a22d44d769190604"
+    },
+    "catchAll": {
+      "workspaceId": "694c1ae9ebef3b84192da7fc",
+      "campaignId": "6a339841a22d44d769190604"
+    }
+  },
+  "limits": {
+    "openaiConcurrency": 8,
+    "uploadConcurrency": 3
+  }
+}

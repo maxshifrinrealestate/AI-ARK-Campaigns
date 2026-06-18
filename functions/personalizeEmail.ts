@@ -118,8 +118,8 @@ Return ONLY the inner email content — no outer <div> wrapper (that is added au
 Hard rules:
 - Under 65 words total in plain text (strict).
 - Use exactly two <br></br> tags: one after the greeting, one before the closing question.
-- Format: Hi {first_name},<br></br>{candidate hook referencing their company}<br></br>{hiring-intent CTA}
-- Start greeting with first name only (no Dr./titles).
+- Format: {first_name},<br></br>{candidate hook referencing their company}<br></br>{hiring-intent CTA}
+- Start with first name only followed by a comma — NO salutation (no Hi, Hey, Hello, Dear).
 - Candidate-led: lead with relevant talent you know or have been speaking with — never a product pitch.
 - Vary the opening phrase; NEVER start the hook with "we have", "we've", or "we know".
 - Prefer natural phrases like "I've been in touch with", "I know a few", "been speaking with", etc. — each email must feel distinct.
@@ -264,7 +264,7 @@ function fallbackInner(input: PersonalizeEmailInput, cta: string, opener: string
     ? `${opener} ${talent} with ${niche.toLowerCase()} experience around ${place} — backgrounds that map to how ${company} operates.`
     : `${opener} ${talent} with ${niche.toLowerCase()} backgrounds that align with the work ${company} is doing.`;
 
-  return `Hi ${first},<br></br>${hook}<br></br>${cta}`;
+  return `${first},<br></br>${hook}<br></br>${cta}`;
 }
 
 function inferTalentLabel(input: PersonalizeEmailInput): string {
