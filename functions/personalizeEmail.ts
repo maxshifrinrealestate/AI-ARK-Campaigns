@@ -1,0 +1,399 @@
+import { DEFAULT_CHAT_MODEL, getOpenAI, withRetry } from "../integrations/openai.js";
+import { cleanText } from "./classifyMx.js";
+
+export type PersonalizeEmailInput = {
+  firstName?: string;
+  lastName?: string;
+  title?: string;
+  headline?: string;
+  companyName?: string;
+  companyDescription?: string;
+  companyProductsServices?: string;
+  companyIndustry?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  facilityType?: string;
+  talentType?: string;
+  /** 0-based row index — rotates opener and CTA style for variety across the batch. */
+  rowIndex?: number;
+};
+
+export type PersonalizeEmailResult = {
+  body: string;
+  wordCount: number;
+  ctaStyle: string;
+  openerStyle: string;
+};
+
+const MAX_WORDS = 65;
+
+const SPAM_WORDS = [
+  "free",
+  "guarantee",
+  "guaranteed",
+  "act now",
+  "limited time",
+  "click here",
+  "buy now",
+  "discount",
+  "offer",
+  "revolutionary",
+  "amazing",
+  "incredible",
+  "unprecedented",
+  "risk-free",
+  "no obligation",
+  "winner",
+  "congratulations",
+  "urgent",
+  "exclusive deal",
+  "100%",
+  "cash",
+  "cheap",
+  "lowest price"
+];
+
+/** Hiring-intent CTAs — never promise to send lists, decks, or overviews. */
+const CTA_STYLES = [
+  "Are you adding engineers on the product side this year?",
+  "Is your team hiring in this area right now?",
+  "Would this kind of background fit roles you're planning?",
+  "Curious if you're staffing up on the engineering side soon?",
+  "Are you open to strong candidates in this niche even if timing isn't immediate?",
+  "Does this profile match anyone you're looking to bring on?",
+  "Is talent like this on your hiring roadmap?",
+  "Might someone with this background fill a gap you're expecting?",
+  "Are you building out the team in this space this quarter?",
+  "Would hires in this specialty be relevant for you right now?",
+  "Is this the type of talent you're actively looking for?",
+  "Any plans to grow the bench in this area soon?",
+  "Would engineers like this be useful for what you're building?",
+  "Are you exploring hires in this space this half?",
+  "Is headcount growth here something you're thinking about?",
+  "Would this skill set be on your radar for future roles?",
+  "Are you keeping an eye out for people in this category?",
+  "Does your roadmap include bringing on this kind of talent?",
+  "Is this a hiring priority for you at the moment?",
+  "Might your team need people like this in the near term?",
+  "Are you planning to expand in this function soon?",
+  "Would this background be relevant for upcoming openings?",
+  "Is recruiting in this area something on your plate?",
+  "Any interest in connecting if you're hiring in this space?"
+];
+
+/** Varied candidate-led openers — avoid repetitive "we have" patterns. */
+const OPENER_STYLES = [
+  "I've been in touch with a couple of",
+  "I know a few",
+  "Been speaking with some",
+  "On my side, a couple of",
+  "I came across a few",
+  "Recently connected with a couple of",
+  "A few folks in my network are",
+  "I've crossed paths with some",
+  "There's a small bench of",
+  "I keep running into",
+  "A couple of engineers I work with are",
+  "I've been tracking a few",
+  "Met a handful of",
+  "There's a pair of",
+  "I'm aware of a few",
+  "A short list of people I know are",
+  "I've bumped into a couple of",
+  "A few builders I've spoken with are",
+  "I'm in touch with a couple of",
+  "Connected recently with a few",
+  "I follow a small group of",
+  "A couple names keep coming up —",
+  "I've been introduced to a few",
+  "There's a cluster of"
+];
+
+const BANNED_OPENERS = ["we have", "we've been", "we know", "we are"];
+
+const SYSTEM_PROMPT = `You write short cold outreach emails for recruiting and talent placement.
+Return ONLY the inner email content — no outer <div> wrapper (that is added automatically).
+
+Hard rules:
+- Under 65 words total in plain text (strict).
+- Use exactly two <br></br> tags: one after the greeting, one before the closing question.
+- Format: {first_name},<br></br>{candidate hook referencing their company}<br></br>{hiring-intent CTA}
+- Start with first name only followed by a comma — NO salutation (no Hi, Hey, Hello, Dear).
+- Candidate-led: lead with relevant talent you know or have been speaking with — never a product pitch.
+- Vary the opening phrase; NEVER start the hook with "we have", "we've", or "we know".
+- Prefer natural phrases like "I've been in touch with", "I know a few", "been speaking with", etc. — each email must feel distinct.
+- The closing CTA must ask about hiring intent, future headcount, or whether this talent type is relevant — NEVER offer to send a list, deck, overview, profiles, or summary.
+- Imply confidence that you place strong candidates in their space without over-promising.
+- Reference one specific detail from the company or contact context.
+- End with the exact CTA sentence provided — copy it verbatim.
+- Conversational, plain English. No bullet points, no emojis, no ALL CAPS.
+- Never use these spam-trigger words/phrases: ${SPAM_WORDS.join(", ")}.
+- Do not mention "platform", "solution", "leverage", "synergy", or "game-changer".`;
+
+function buildUserPrompt(input: PersonalizeEmailInput, cta: string, opener: string): string {
+  const firstName = firstNameOnly(input.firstName);
+  return `Write one personalized email for this contact.
+
+First name (for greeting): ${firstName}
+Title: ${cleanText(input.title)}
+Headline: ${cleanText(input.headline)}
+Company: ${cleanText(input.companyName)}
+Industry: ${cleanText(input.companyIndustry)}
+Location: ${[cleanText(input.city), cleanText(input.state), cleanText(input.country)].filter(Boolean).join(", ")}
+Company description: ${cleanText(input.companyDescription).slice(0, 400)}
+Products/services: ${cleanText(input.companyProductsServices).slice(0, 200)}
+Facility type (if known): ${cleanText(input.facilityType)}
+Talent type (if known): ${cleanText(input.talentType)}
+
+Suggested opener style (use or closely adapt): ${opener}
+Required closing CTA (use exactly): ${cta}`;
+}
+
+function firstNameOnly(raw?: string): string {
+  const name = cleanText(raw);
+  if (!name) return "there";
+  return name.split(/\s+/)[0]!.replace(/[^a-zA-Z'-]/g, "") || "there";
+}
+
+/** Count words in plain text, stripping HTML tags. */
+export function countWords(text: string): number {
+  const plain = stripHtml(text);
+  return plain.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function stripHtml(text: string): string {
+  return text
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function containsSpam(text: string): string | null {
+  const lower = stripHtml(text).toLowerCase();
+  for (const word of SPAM_WORDS) {
+    if (lower.includes(word)) return word;
+  }
+  for (const banned of BANNED_OPENERS) {
+    if (lower.includes(banned)) return banned;
+  }
+  const listOffer =
+    /\b(send|share|float|pass)\b.*\b(list|profiles|overview|summary|deck|names)\b/i.test(lower) ||
+    /\b(short list|two-line|brief note)\b/i.test(lower);
+  if (listOffer) return "list_offer";
+  return null;
+}
+
+function pickCta(rowIndex = 0): string {
+  return CTA_STYLES[rowIndex % CTA_STYLES.length]!;
+}
+
+function pickOpener(rowIndex = 0): string {
+  return OPENER_STYLES[rowIndex % OPENER_STYLES.length]!;
+}
+
+const TECH_TALENT_POOL = [
+  "software engineers",
+  "full-stack engineers",
+  "backend engineers",
+  "senior engineers",
+  "platform engineers",
+  "ML engineers",
+  "AI engineers",
+  "infra engineers",
+  "product engineers",
+  "mobile engineers",
+  "data engineers",
+  "security engineers",
+  "frontend engineers",
+  "cloud engineers",
+  "DevOps engineers"
+];
+
+const TECH_FOCUS_PATTERNS: Array<{ match: RegExp; focus: string }> = [
+  { match: /\b(ai|machine learning|llm|generative)\b/i, focus: "AI products" },
+  { match: /\b(saas|software|platform|api)\b/i, focus: "SaaS" },
+  { match: /\b(fintech|payments|banking|mortgage)\b/i, focus: "fintech" },
+  { match: /\b(cyber|security|soc|edr)\b/i, focus: "security" },
+  { match: /\b(health|clinical|medical|pharma)\b/i, focus: "healthtech" },
+  { match: /\b(ecommerce|retail|marketplace)\b/i, focus: "e-commerce" },
+  { match: /\b(data|analytics|intelligence)\b/i, focus: "data products" },
+  { match: /\b(mobile|ios|android)\b/i, focus: "mobile apps" },
+  { match: /\b(cloud|infrastructure|devops)\b/i, focus: "cloud infrastructure" },
+  { match: /\b(design|ux|creative)\b/i, focus: "product engineering" }
+];
+
+function inferTechTalent(input: PersonalizeEmailInput): string {
+  const explicit = cleanText(input.talentType);
+  if (explicit && /engineer|developer|builder|architect|devops/i.test(explicit)) {
+    return explicit.toLowerCase().includes("engineer") ? explicit : `${explicit}`;
+  }
+
+  const text = `${cleanText(input.companyIndustry)} ${cleanText(input.companyDescription)} ${cleanText(input.companyProductsServices)}`.toLowerCase();
+  if (/\b(cyber|security)\b/.test(text)) return "security engineers";
+  if (/\b(ai|machine learning|llm)\b/.test(text)) return "ML engineers";
+  if (/\b(data|analytics)\b/.test(text)) return "data engineers";
+  if (/\b(mobile|ios|android)\b/.test(text)) return "mobile engineers";
+  if (/\b(cloud|infra|devops)\b/.test(text)) return "platform engineers";
+  if (/\b(design|ux)\b/.test(text)) return "product engineers";
+
+  const idx = (input.rowIndex ?? 0) % TECH_TALENT_POOL.length;
+  return TECH_TALENT_POOL[idx]!;
+}
+
+function inferTechFocus(input: PersonalizeEmailInput): string {
+  const text = `${cleanText(input.companyIndustry)} ${cleanText(input.companyDescription)} ${cleanText(input.companyProductsServices)}`;
+  for (const { match, focus } of TECH_FOCUS_PATTERNS) {
+    if (match.test(text)) return focus;
+  }
+  const industry = cleanText(input.companyIndustry).toLowerCase();
+  if (industry.includes("software")) return "software";
+  if (industry.includes("technology")) return "tech";
+  return "tech";
+}
+
+function buildRichFallback(input: PersonalizeEmailInput, cta: string, opener: string): string {
+  const first = firstNameOnly(input.firstName);
+  const talent = inferTechTalent(input);
+  const focus = inferTechFocus(input);
+  const company = cleanText(input.companyName) || "your team";
+  const place = [cleanText(input.city), cleanText(input.state)].filter(Boolean).join(", ");
+
+  const hookVariants = [
+    place
+      ? `${opener} ${talent} with ${focus} experience in ${place} — might be relevant for ${company}.`
+      : `${opener} ${talent} with ${focus} experience — might be relevant for ${company}.`,
+    place
+      ? `${opener} ${talent} in ${place} who've worked in ${focus} — curious if ${company} is hiring engineers.`
+      : `${opener} ${talent} who've worked in ${focus} — curious if ${company} is hiring engineers.`,
+    place
+      ? `${opener} ${talent} in ${place} with ${focus} backgrounds that could line up with ${company}.`
+      : `${opener} ${talent} with ${focus} backgrounds that could line up with ${company}.`
+  ];
+
+  const hook = hookVariants[(input.rowIndex ?? 0) % hookVariants.length]!;
+  let inner = `${first},<br></br>${hook}<br></br>${cta}`;
+
+  if (countWords(inner) > MAX_WORDS) {
+    const shortHook = place
+      ? `${opener} ${talent} with ${focus} experience in ${place}.`
+      : `${opener} ${talent} with ${focus} experience.`;
+    inner = `${first},<br></br>${shortHook}<br></br>${cta}`;
+  }
+
+  return inner;
+}
+
+/** Zero-API personalization using row context + rotated openers/CTAs. */
+export function personalizeEmailLocal(input: PersonalizeEmailInput): PersonalizeEmailResult {
+  const rowIndex = input.rowIndex ?? 0;
+  const ctaStyle = pickCta(rowIndex);
+  const openerStyle = pickOpener(rowIndex);
+  const inner = buildRichFallback(input, ctaStyle, openerStyle);
+  const body = wrapEmailHtml(inner);
+  return { body, wordCount: countWords(body), ctaStyle, openerStyle };
+}
+
+/** Wrap inner content in required HTML envelope. */
+export function wrapEmailHtml(inner: string): string {
+  const trimmed = inner.trim();
+  if (trimmed.startsWith("<div>") && trimmed.endsWith("</div>")) return trimmed;
+  return `<div>${trimmed}</div>`;
+}
+
+export async function personalizeEmail(
+  input: PersonalizeEmailInput,
+  opts: { fallbackOnly?: boolean } = {}
+): Promise<PersonalizeEmailResult> {
+  if (opts.fallbackOnly) {
+    return personalizeEmailLocal(input);
+  }
+
+  const rowIndex = input.rowIndex ?? 0;
+  const ctaStyle = pickCta(rowIndex);
+  const openerStyle = pickOpener(rowIndex);
+  const firstName = firstNameOnly(input.firstName);
+
+  try {
+    const openai = getOpenAI();
+    const out = await withRetry(
+      () =>
+        openai.chat.completions.create({
+          model: DEFAULT_CHAT_MODEL,
+          temperature: 0.9,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: buildUserPrompt(input, ctaStyle, openerStyle) }
+          ]
+        }),
+      { label: `openai.personalizeEmail "${firstName}"` }
+    );
+
+    let inner = (out.choices[0]?.message?.content ?? "").trim();
+    inner = normalizeInnerHtml(inner);
+
+    const spam = containsSpam(inner);
+    if (spam || countWords(inner) > MAX_WORDS) {
+      inner = buildRichFallback(input, ctaStyle, openerStyle);
+    }
+
+    const body = wrapEmailHtml(inner);
+    return { body, wordCount: countWords(body), ctaStyle, openerStyle };
+  } catch (err) {
+    console.warn(`[personalizeEmail] fallback for ${firstName}: ${(err as Error).message}`);
+    const inner = buildRichFallback(input, ctaStyle, openerStyle);
+    const body = wrapEmailHtml(inner);
+    return { body, wordCount: countWords(body), ctaStyle, openerStyle };
+  }
+}
+
+function normalizeInnerHtml(text: string): string {
+  let t = text.replace(/^<div>/i, "").replace(/<\/div>$/i, "").trim();
+  t = t.replace(/<br\s*\/?>/gi, "<br></br>");
+  if (!/<br><\/br>/i.test(t)) {
+    t = t.replace(/\n+/g, "<br></br>");
+  }
+  return t;
+}
+
+/** Deterministic fallback when the model is unavailable or output fails validation. */
+function fallbackInner(input: PersonalizeEmailInput, cta: string, opener: string): string {
+  const first = firstNameOnly(input.firstName);
+  const talent = inferTechTalent(input);
+  const focus = inferTechFocus(input);
+  const place = [cleanText(input.city), cleanText(input.state)].filter(Boolean).join(", ");
+
+  const hook = place
+    ? `${opener} ${talent} with ${focus.toLowerCase()} experience in ${place}.`
+    : `${opener} ${talent} with ${focus.toLowerCase()} experience.`;
+
+  return `${first},<br></br>${hook}<br></br>${cta}`;
+}
+
+function inferTalentLabel(input: PersonalizeEmailInput): string {
+  const text = `${cleanText(input.companyIndustry)} ${cleanText(input.companyDescription)}`.toLowerCase();
+  if (text.includes("software") || text.includes("ai") || text.includes("saas")) return "engineers";
+  if (text.includes("security") || text.includes("cyber")) return "security practitioners";
+  if (text.includes("design")) return "designers";
+  if (text.includes("health") || text.includes("clinical")) return "clinicians";
+  return "professionals";
+}
+
+function inferFacilityLabel(desc?: string, industry?: string): string {
+  const text = `${cleanText(desc)} ${cleanText(industry)}`.toLowerCase();
+  if (text.includes("urgent care")) return "urgent care";
+  if (text.includes("mental health") || text.includes("counseling")) return "outpatient behavioral health";
+  if (text.includes("pediatric")) return "pediatric care";
+  if (text.includes("nephrology") || text.includes("kidney")) return "nephrology";
+  if (text.includes("primary care") || text.includes("family medicine")) return "primary care";
+  if (text.includes("rehab") || text.includes("recovery") || text.includes("addiction")) return "behavioral health";
+  if (text.includes("proton") || text.includes("cancer")) return "oncology";
+  if (text.includes("community health")) return "community health";
+  if (text.includes("surgery") || text.includes("ambulatory")) return "ambulatory care";
+  if (text.includes("robotics") || text.includes("autonomy")) return "robotics and autonomy";
+  if (text.includes("cyber") || text.includes("security")) return "cybersecurity";
+  if (text.includes("mortgage") || text.includes("fintech")) return "fintech";
+  if (text.includes("wealth")) return "wealth management";
+  return "";
+}

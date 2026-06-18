@@ -25,10 +25,10 @@ export function routeCampaign(
 ): RouteResult {
   const raw = cleanText(rawDomainSetting);
   const norm = raw.toLowerCase().replace(/[^a-z]/g, "");
-  if (norm === "smtp") {
+  if (norm === "smtp" || norm === "smtpvalid") {
     return { ok: true, setting: "SMTP", target: config.smtp };
   }
-  if (norm === "catchall") {
+  if (norm === "catchall" || norm === "catchallvalid") {
     return { ok: true, setting: "CatchAll", target: config.catchAll };
   }
   if (norm === "" && opts.treatEmptyAsSmtp) {
