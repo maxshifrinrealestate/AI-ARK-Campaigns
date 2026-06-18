@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.json",
     "shards": "tsx scripts/run-parallel-shards.ts",
     "personalize": "tsx scripts/personalize-emails.ts",
-    "upload:tech": "tsx scripts/enrich-personalize-upload.ts"
+    "upload:tech": "tsx scripts/enrich-personalize-upload.ts",
+    "reupload:fixed": "tsx scripts/reupload-fixed-scripts.ts"
   },
   "engines": {
     "node": ">=20.0.0"

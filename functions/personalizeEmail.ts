@@ -56,7 +56,7 @@ const SPAM_WORDS = [
 
 /** Hiring-intent CTAs — never promise to send lists, decks, or overviews. */
 const CTA_STYLES = [
-  "Are you adding anyone on the perception side this year?",
+  "Are you adding engineers on the product side this year?",
   "Is your team hiring in this area right now?",
   "Would this kind of background fit roles you're planning?",
   "Curious if you're staffing up on the engineering side soon?",
@@ -193,63 +193,95 @@ function pickOpener(rowIndex = 0): string {
   return OPENER_STYLES[rowIndex % OPENER_STYLES.length]!;
 }
 
-function inferNicheFromTitle(title?: string, headline?: string): string {
-  const text = `${cleanText(title)} ${cleanText(headline)}`.toLowerCase();
-  if (text.includes("ceo") || text.includes("founder")) return "leadership";
-  if (text.includes("engineer") || text.includes("cto")) return "engineering";
-  if (text.includes("product")) return "product";
-  if (text.includes("sales") || text.includes("revenue")) return "go-to-market";
-  if (text.includes("design")) return "design";
-  if (text.includes("security") || text.includes("cyber")) return "cybersecurity";
-  return "";
+const TECH_TALENT_POOL = [
+  "software engineers",
+  "full-stack engineers",
+  "backend engineers",
+  "senior engineers",
+  "platform engineers",
+  "ML engineers",
+  "AI engineers",
+  "infra engineers",
+  "product engineers",
+  "mobile engineers",
+  "data engineers",
+  "security engineers",
+  "frontend engineers",
+  "cloud engineers",
+  "DevOps engineers"
+];
+
+const TECH_FOCUS_PATTERNS: Array<{ match: RegExp; focus: string }> = [
+  { match: /\b(ai|machine learning|llm|generative)\b/i, focus: "AI products" },
+  { match: /\b(saas|software|platform|api)\b/i, focus: "SaaS" },
+  { match: /\b(fintech|payments|banking|mortgage)\b/i, focus: "fintech" },
+  { match: /\b(cyber|security|soc|edr)\b/i, focus: "security" },
+  { match: /\b(health|clinical|medical|pharma)\b/i, focus: "healthtech" },
+  { match: /\b(ecommerce|retail|marketplace)\b/i, focus: "e-commerce" },
+  { match: /\b(data|analytics|intelligence)\b/i, focus: "data products" },
+  { match: /\b(mobile|ios|android)\b/i, focus: "mobile apps" },
+  { match: /\b(cloud|infrastructure|devops)\b/i, focus: "cloud infrastructure" },
+  { match: /\b(design|ux|creative)\b/i, focus: "product engineering" }
+];
+
+function inferTechTalent(input: PersonalizeEmailInput): string {
+  const explicit = cleanText(input.talentType);
+  if (explicit && /engineer|developer|builder|architect|devops/i.test(explicit)) {
+    return explicit.toLowerCase().includes("engineer") ? explicit : `${explicit}`;
+  }
+
+  const text = `${cleanText(input.companyIndustry)} ${cleanText(input.companyDescription)} ${cleanText(input.companyProductsServices)}`.toLowerCase();
+  if (/\b(cyber|security)\b/.test(text)) return "security engineers";
+  if (/\b(ai|machine learning|llm)\b/.test(text)) return "ML engineers";
+  if (/\b(data|analytics)\b/.test(text)) return "data engineers";
+  if (/\b(mobile|ios|android)\b/.test(text)) return "mobile engineers";
+  if (/\b(cloud|infra|devops)\b/.test(text)) return "platform engineers";
+  if (/\b(design|ux)\b/.test(text)) return "product engineers";
+
+  const idx = (input.rowIndex ?? 0) % TECH_TALENT_POOL.length;
+  return TECH_TALENT_POOL[idx]!;
 }
 
-function snippetFromContext(input: PersonalizeEmailInput): string {
-  const headline = cleanText(input.headline);
-  const title = cleanText(input.title);
-  const desc = cleanText(input.companyDescription).replace(/\s+/g, " ").slice(0, 120);
-  const company = cleanText(input.companyName) || "your team";
-  if (headline.length > 20) {
-    return `folks who fit the ${headline.split("|")[0]!.trim().toLowerCase()} lane ${company} operates in.`;
+function inferTechFocus(input: PersonalizeEmailInput): string {
+  const text = `${cleanText(input.companyIndustry)} ${cleanText(input.companyDescription)} ${cleanText(input.companyProductsServices)}`;
+  for (const { match, focus } of TECH_FOCUS_PATTERNS) {
+    if (match.test(text)) return focus;
   }
-  if (title.length > 5) {
-    return `people who understand the ${title.toLowerCase()} side of how ${company} runs.`;
-  }
-  if (desc.length > 30) {
-    const clip = desc.split(/[.!?]/)[0]?.trim() ?? desc;
-    return `backgrounds tied to ${clip.toLowerCase().slice(0, 80)}.`;
-  }
-  return "";
+  const industry = cleanText(input.companyIndustry).toLowerCase();
+  if (industry.includes("software")) return "software";
+  if (industry.includes("technology")) return "tech";
+  return "tech";
 }
 
 function buildRichFallback(input: PersonalizeEmailInput, cta: string, opener: string): string {
   const first = firstNameOnly(input.firstName);
+  const talent = inferTechTalent(input);
+  const focus = inferTechFocus(input);
   const company = cleanText(input.companyName) || "your team";
-  const talent = cleanText(input.talentType) || inferTalentLabel(input) || "specialists";
-  const niche =
-    cleanText(input.facilityType) ||
-    inferFacilityLabel(input.companyDescription, input.companyIndustry) ||
-    inferNicheFromTitle(input.title, input.headline) ||
-    cleanText(input.companyIndustry) ||
-    "your space";
   const place = [cleanText(input.city), cleanText(input.state)].filter(Boolean).join(", ");
-  const detail = snippetFromContext(input);
 
-  let hook: string;
-  if (detail && place) {
-    hook = `${opener} ${talent} with ${niche.toLowerCase()} experience around ${place} — ${detail}`;
-  } else if (detail) {
-    hook = `${opener} ${talent} with ${niche.toLowerCase()} background — ${detail}`;
-  } else if (place) {
-    hook = `${opener} ${talent} with ${niche.toLowerCase()} experience around ${place} — backgrounds that map to how ${company} operates.`;
-  } else {
-    hook = `${opener} ${talent} with ${niche.toLowerCase()} backgrounds that align with the work ${company} is doing.`;
-  }
+  const hookVariants = [
+    place
+      ? `${opener} ${talent} with ${focus} experience in ${place} — might be relevant for ${company}.`
+      : `${opener} ${talent} with ${focus} experience — might be relevant for ${company}.`,
+    place
+      ? `${opener} ${talent} in ${place} who've worked in ${focus} — curious if ${company} is hiring engineers.`
+      : `${opener} ${talent} who've worked in ${focus} — curious if ${company} is hiring engineers.`,
+    place
+      ? `${opener} ${talent} in ${place} with ${focus} backgrounds that could line up with ${company}.`
+      : `${opener} ${talent} with ${focus} backgrounds that could line up with ${company}.`
+  ];
 
+  const hook = hookVariants[(input.rowIndex ?? 0) % hookVariants.length]!;
   let inner = `${first},<br></br>${hook}<br></br>${cta}`;
+
   if (countWords(inner) > MAX_WORDS) {
-    inner = fallbackInner(input, cta, opener);
+    const shortHook = place
+      ? `${opener} ${talent} with ${focus} experience in ${place}.`
+      : `${opener} ${talent} with ${focus} experience.`;
+    inner = `${first},<br></br>${shortHook}<br></br>${cta}`;
   }
+
   return inner;
 }
 
@@ -328,18 +360,13 @@ function normalizeInnerHtml(text: string): string {
 /** Deterministic fallback when the model is unavailable or output fails validation. */
 function fallbackInner(input: PersonalizeEmailInput, cta: string, opener: string): string {
   const first = firstNameOnly(input.firstName);
-  const company = cleanText(input.companyName) || "your team";
-  const talent = cleanText(input.talentType) || inferTalentLabel(input) || "specialists";
-  const niche =
-    cleanText(input.facilityType) ||
-    inferFacilityLabel(input.companyDescription, input.companyIndustry) ||
-    cleanText(input.companyIndustry) ||
-    "your space";
+  const talent = inferTechTalent(input);
+  const focus = inferTechFocus(input);
   const place = [cleanText(input.city), cleanText(input.state)].filter(Boolean).join(", ");
 
   const hook = place
-    ? `${opener} ${talent} with ${niche.toLowerCase()} experience around ${place} — backgrounds that map to how ${company} operates.`
-    : `${opener} ${talent} with ${niche.toLowerCase()} backgrounds that align with the work ${company} is doing.`;
+    ? `${opener} ${talent} with ${focus.toLowerCase()} experience in ${place}.`
+    : `${opener} ${talent} with ${focus.toLowerCase()} experience.`;
 
   return `${first},<br></br>${hook}<br></br>${cta}`;
 }
