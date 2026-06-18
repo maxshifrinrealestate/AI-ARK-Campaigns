@@ -193,6 +193,76 @@ function pickOpener(rowIndex = 0): string {
   return OPENER_STYLES[rowIndex % OPENER_STYLES.length]!;
 }
 
+function inferNicheFromTitle(title?: string, headline?: string): string {
+  const text = `${cleanText(title)} ${cleanText(headline)}`.toLowerCase();
+  if (text.includes("ceo") || text.includes("founder")) return "leadership";
+  if (text.includes("engineer") || text.includes("cto")) return "engineering";
+  if (text.includes("product")) return "product";
+  if (text.includes("sales") || text.includes("revenue")) return "go-to-market";
+  if (text.includes("design")) return "design";
+  if (text.includes("security") || text.includes("cyber")) return "cybersecurity";
+  return "";
+}
+
+function snippetFromContext(input: PersonalizeEmailInput): string {
+  const headline = cleanText(input.headline);
+  const title = cleanText(input.title);
+  const desc = cleanText(input.companyDescription).replace(/\s+/g, " ").slice(0, 120);
+  const company = cleanText(input.companyName) || "your team";
+  if (headline.length > 20) {
+    return `folks who fit the ${headline.split("|")[0]!.trim().toLowerCase()} lane ${company} operates in.`;
+  }
+  if (title.length > 5) {
+    return `people who understand the ${title.toLowerCase()} side of how ${company} runs.`;
+  }
+  if (desc.length > 30) {
+    const clip = desc.split(/[.!?]/)[0]?.trim() ?? desc;
+    return `backgrounds tied to ${clip.toLowerCase().slice(0, 80)}.`;
+  }
+  return "";
+}
+
+function buildRichFallback(input: PersonalizeEmailInput, cta: string, opener: string): string {
+  const first = firstNameOnly(input.firstName);
+  const company = cleanText(input.companyName) || "your team";
+  const talent = cleanText(input.talentType) || inferTalentLabel(input) || "specialists";
+  const niche =
+    cleanText(input.facilityType) ||
+    inferFacilityLabel(input.companyDescription, input.companyIndustry) ||
+    inferNicheFromTitle(input.title, input.headline) ||
+    cleanText(input.companyIndustry) ||
+    "your space";
+  const place = [cleanText(input.city), cleanText(input.state)].filter(Boolean).join(", ");
+  const detail = snippetFromContext(input);
+
+  let hook: string;
+  if (detail && place) {
+    hook = `${opener} ${talent} with ${niche.toLowerCase()} experience around ${place} — ${detail}`;
+  } else if (detail) {
+    hook = `${opener} ${talent} with ${niche.toLowerCase()} background — ${detail}`;
+  } else if (place) {
+    hook = `${opener} ${talent} with ${niche.toLowerCase()} experience around ${place} — backgrounds that map to how ${company} operates.`;
+  } else {
+    hook = `${opener} ${talent} with ${niche.toLowerCase()} backgrounds that align with the work ${company} is doing.`;
+  }
+
+  let inner = `${first},<br></br>${hook}<br></br>${cta}`;
+  if (countWords(inner) > MAX_WORDS) {
+    inner = fallbackInner(input, cta, opener);
+  }
+  return inner;
+}
+
+/** Zero-API personalization using row context + rotated openers/CTAs. */
+export function personalizeEmailLocal(input: PersonalizeEmailInput): PersonalizeEmailResult {
+  const rowIndex = input.rowIndex ?? 0;
+  const ctaStyle = pickCta(rowIndex);
+  const openerStyle = pickOpener(rowIndex);
+  const inner = buildRichFallback(input, ctaStyle, openerStyle);
+  const body = wrapEmailHtml(inner);
+  return { body, wordCount: countWords(body), ctaStyle, openerStyle };
+}
+
 /** Wrap inner content in required HTML envelope. */
 export function wrapEmailHtml(inner: string): string {
   const trimmed = inner.trim();
@@ -200,7 +270,14 @@ export function wrapEmailHtml(inner: string): string {
   return `<div>${trimmed}</div>`;
 }
 
-export async function personalizeEmail(input: PersonalizeEmailInput): Promise<PersonalizeEmailResult> {
+export async function personalizeEmail(
+  input: PersonalizeEmailInput,
+  opts: { fallbackOnly?: boolean } = {}
+): Promise<PersonalizeEmailResult> {
+  if (opts.fallbackOnly) {
+    return personalizeEmailLocal(input);
+  }
+
   const rowIndex = input.rowIndex ?? 0;
   const ctaStyle = pickCta(rowIndex);
   const openerStyle = pickOpener(rowIndex);
@@ -226,14 +303,14 @@ export async function personalizeEmail(input: PersonalizeEmailInput): Promise<Pe
 
     const spam = containsSpam(inner);
     if (spam || countWords(inner) > MAX_WORDS) {
-      inner = fallbackInner(input, ctaStyle, openerStyle);
+      inner = buildRichFallback(input, ctaStyle, openerStyle);
     }
 
     const body = wrapEmailHtml(inner);
     return { body, wordCount: countWords(body), ctaStyle, openerStyle };
   } catch (err) {
     console.warn(`[personalizeEmail] fallback for ${firstName}: ${(err as Error).message}`);
-    const inner = fallbackInner(input, ctaStyle, openerStyle);
+    const inner = buildRichFallback(input, ctaStyle, openerStyle);
     const body = wrapEmailHtml(inner);
     return { body, wordCount: countWords(body), ctaStyle, openerStyle };
   }
