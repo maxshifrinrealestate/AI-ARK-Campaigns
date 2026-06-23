@@ -5,6 +5,7 @@ import { parse } from "csv-parse/sync";
 import { stringify } from "csv-stringify/sync";
 
 import { classifyMaServiceType } from "../functions/classifyMaServiceType.js";
+import { enrichMaIcp } from "../functions/enrichMaIcp.js";
 import {
   enrichMaOutreach,
   pushToBatchContext,
@@ -86,6 +87,17 @@ async function run(): Promise<void> {
       companyWebsite: lead.company_website
     });
 
+    const maIcp = await enrichMaIcp({
+      company_name_normalized: companyNameNormalized,
+      company_description: lead.company_description,
+      company_products_services: lead.company_products_services,
+      company_industry: lead.company_industry,
+      title: lead.title,
+      city: lead.city,
+      state: lead.state,
+      ma_service_type: maServiceType
+    });
+
     const outreach = await enrichMaOutreach(
       {
         first_name: lead.first_name,
@@ -102,7 +114,8 @@ async function run(): Promise<void> {
         country: lead.country,
         company_website: lead.company_website,
         company_linkedin: lead.company_linkedin,
-        ma_service_type: maServiceType
+        ma_service_type: maServiceType,
+        ma_icp: maIcp
       },
       {
         companyDescription: config.company.description,
@@ -120,6 +133,11 @@ async function run(): Promise<void> {
       company_name: lead.company_name ?? "",
       company_name_normalized: companyNameNormalized,
       ma_service_type: maServiceType,
+      icp_portfolio_imagination: maIcp.portfolio_imagination,
+      icp_target_industries: maIcp.target_industries.join("; "),
+      icp_deal_sizes: maIcp.deal_size_bands.join("; "),
+      icp_company_types: maIcp.target_company_types.join("; "),
+      icp_deal_types: maIcp.deal_types.join("; "),
       opening_line: outreach.opening_line,
       teaser: outreach.teaser,
       cta: outreach.cta,
@@ -136,6 +154,7 @@ async function run(): Promise<void> {
 
     console.log(`\n--- Lead ${i + 1}/${slice.length}: ${lead.first_name} ${lead.last_name} @ ${lead.company_name} ---`);
     console.log(`Service: ${maServiceType}`);
+    console.log(`ICP: ${maIcp.portfolio_imagination}`);
     console.log(`Email preview:\n${outreach.cold_email_html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/?div>/gi, "")}`);
   }
 
@@ -149,6 +168,8 @@ async function run(): Promise<void> {
     <section style="margin-bottom:2rem;padding:1rem;border:1px solid #ddd;border-radius:8px;">
       <h3>${i + 1}. ${r.first_name} ${r.last_name} — ${r.company_name}</h3>
       <p><strong>Service:</strong> ${r.ma_service_type} &nbsp;|&nbsp; <strong>Title:</strong> ${r.title}</p>
+      <p><strong>ICP:</strong> ${r.icp_portfolio_imagination}</p>
+      <p><strong>Target industries:</strong> ${r.icp_target_industries}</p>
       <p><strong>Opening:</strong> ${r.opening_line}</p>
       <p><strong>Teaser:</strong> ${r.teaser}</p>
       <p><strong>CTA:</strong> ${r.cta}</p>

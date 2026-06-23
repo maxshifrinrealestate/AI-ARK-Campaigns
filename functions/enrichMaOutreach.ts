@@ -1,5 +1,6 @@
 import { DEFAULT_CHAT_MODEL, getOpenAI, withRetry } from "../integrations/openai.js";
 import { buildMaLeadContext, type MaLeadInput } from "./buildMaLeadContext.js";
+import type { MaIcp } from "./enrichMaIcp.js";
 import {
   assembleColdEmailHtml,
   validateColdEmailHtml,
@@ -20,6 +21,10 @@ export type MaOutreachResult = {
   cold_email_html: string;
 };
 
+export type MaOutreachInput = MaLeadInput & {
+  ma_icp?: MaIcp;
+};
+
 export type MaOutreachBatchContext = {
   recentOpenings: string[];
   recentCtas: string[];
@@ -36,11 +41,12 @@ const SHARED_RULES = `Rules:
 - No salutations, signatures, emojis, or spam words.`;
 
 export async function enrichMaOutreach(
-  input: MaLeadInput,
+  input: MaOutreachInput,
   config: MaOutreachConfig,
   batchCtx: MaOutreachBatchContext = { recentOpenings: [], recentCtas: [] }
 ): Promise<MaOutreachResult> {
   const ctx = buildMaLeadContext(input);
+  const icp = input.ma_icp ?? ctx.icp;
   const negativeExamples = buildNegativeExamples(batchCtx);
 
   let openingLine = "";
@@ -57,14 +63,14 @@ export async function enrichMaOutreach(
       continue;
     }
 
-    teaser = await generateTeaser(ctx, openingLine, config, attempt);
+    teaser = await generateTeaser(ctx, openingLine, icp, attempt);
     const teaserVal = validateTeaser(teaser);
     if (!teaserVal.ok) {
       if (attempt === MAX_RETRIES) break;
       continue;
     }
 
-    cta = await generateCta(ctx, openingLine, teaser, config, negativeExamples, attempt);
+    cta = await generateCta(ctx, openingLine, teaser, config, icp, negativeExamples, attempt);
     const ctaVal = validateCta(cta);
     if (!ctaVal.ok) {
       if (attempt === MAX_RETRIES) break;
@@ -87,16 +93,19 @@ export async function enrichMaOutreach(
     }
   }
 
+  const fallbackTeaser = icp?.example_blinded_teaser || buildIcpFallbackTeaser(icp);
+  const fallbackCta = buildIcpFallbackCta(icp);
+
   const html = assembleColdEmailHtml(
     ctx.firstName,
-    openingLine || "Wanted to share something that might fit your deal focus.",
-    teaser || "Family-owned mid-market business.",
-    cta || "We can connect you with companies like this that fit your criteria."
+    openingLine || buildIcpFallbackOpening(ctx),
+    teaser || fallbackTeaser,
+    cta || fallbackCta
   );
   return {
-    opening_line: openingLine || "Wanted to share something that might fit your deal focus.",
-    teaser: teaser || "Family-owned mid-market business.",
-    cta: cta || "We can connect you with companies like this that fit your criteria.",
+    opening_line: openingLine || buildIcpFallbackOpening(ctx),
+    teaser: teaser || fallbackTeaser,
+    cta: cta || fallbackCta,
     cold_email_html: html
   };
 }
@@ -129,23 +138,33 @@ Return only the opening line.`;
 async function generateTeaser(
   ctx: ReturnType<typeof buildMaLeadContext>,
   openingLine: string,
-  config: MaOutreachConfig,
+  icp: MaIcp | null | undefined,
   attempt: number
 ): Promise<string> {
+  const icpGuide = icp
+    ? `
+Their portfolio imagination (use this to craft the teaser — match what THEY pursue):
+${ctx.icpBlock}
+`
+    : "";
+
   const prompt = `Write a teaser line (8-10 words) for a cold email.
 
 ${SHARED_RULES}
-- Hypothetical company profile — the KIND of company they'd pursue. NOT a real company we hold.
-- Use at most TWO of these dimensions: industry, size/revenue band, location, company type.
-- Do NOT stack industry + size + location + type together.
+- Hypothetical blinded company profile matching THIS firm's ideal client / portfolio imagination.
+- NOT a generic "family-owned mid-market business" — be specific to their sectors, deal sizes, and company types.
+- Use at most TWO dimensions: industry, size/revenue band, location, or company type.
 - No company names. No "ready to sell" or "preparing exit".
+- NOT marketing copy — no "unlock", "enhance", "achieve", "growth strategies".
+- Describe a company TYPE they'd want, e.g. "founder-led industrial services platform" or "$20M healthcare staffing firm".
 - Must flow naturally from the opening line.
 
 Opening line already written:
 "${openingLine}"
 
 ${ctx.promptBlock}
-${attempt > 0 ? "Previous teaser failed validation (too many specifics or possession language). Simplify to max 2 dimensions." : ""}
+${icpGuide}
+${attempt > 0 ? "Previous teaser failed validation. Rewrite as a simple company profile (max 2 dimensions), not marketing copy." : ""}
 
 Return only the teaser (8-10 words).`;
 
@@ -157,20 +176,26 @@ async function generateCta(
   openingLine: string,
   teaser: string,
   config: MaOutreachConfig,
+  icp: MaIcp | null | undefined,
   negativeExamples: string,
   attempt: number
 ): Promise<string> {
+  const icpHint = icp?.portfolio_imagination
+    ? `Their portfolio focus: ${icp.portfolio_imagination}`
+    : "";
+
   const prompt = `Write ONE closing CTA sentence for a cold email.
 
 ${SHARED_RULES}
 - Vague connectivity framing — we can connect/introduce them to companies LIKE the teaser.
-- Use soft language: "connect you with companies like this", "intros to companies that fit your criteria/mandate/portfolio/investment vision".
+- Reference their mandate, criteria, portfolio, or investment vision — not generic "fit your criteria".
+- Use soft language: "connect you with companies like this", "intros to companies aligned with your portfolio".
 - NEVER say we have a company, deal, or seller.
-- Outcome-focused for them. One sentence only.
-- Wording must differ from typical cold emails.
+- One sentence only. Vary wording from other emails.
 
 Opening: "${openingLine}"
 Teaser: "${teaser}"
+${icpHint}
 
 Our offer: ${config.productDescription}
 ${negativeExamples}
@@ -210,6 +235,33 @@ function cleanLine(text: string): string {
     .replace(/^cta:\s*/i, "")
     .replace(/[.]+$/, "")
     .trim();
+}
+
+function buildIcpFallbackTeaser(icp: MaIcp | null | undefined): string {
+  if (icp?.example_blinded_teaser) return icp.example_blinded_teaser;
+  const industry = icp?.target_industries[0];
+  const type = icp?.target_company_types[0];
+  if (industry && type) return `${type} in ${industry}`;
+  if (industry) return `Privately held ${industry} business`;
+  if (icp?.deal_size_bands[0]) return `${icp.deal_size_bands[0]} platform company`;
+  return "Founder-led niche services business";
+}
+
+function buildIcpFallbackCta(icp: MaIcp | null | undefined): string {
+  if (icp?.deal_types[0]) {
+    return `We can connect you with companies like this that fit your ${icp.deal_types[0]} focus`;
+  }
+  if (icp?.target_industries[0]) {
+    return `Happy to intro you to companies like this in ${icp.target_industries[0]}`;
+  }
+  return "We can connect you with companies like this aligned with your portfolio";
+}
+
+function buildIcpFallbackOpening(ctx: ReturnType<typeof buildMaLeadContext>): string {
+  if (ctx.icp?.portfolio_imagination) {
+    return `Saw ${ctx.companyName} works in ${ctx.icp.target_industries[0] || ctx.serviceType.toLowerCase()} — curious how you're sourcing new deals`;
+  }
+  return `Came across ${ctx.companyName} and your work in ${ctx.city || ctx.state || "the space"}`;
 }
 
 function buildNegativeExamples(batchCtx: MaOutreachBatchContext): string {

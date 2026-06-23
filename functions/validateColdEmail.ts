@@ -23,6 +23,15 @@ const BANNED_POSSESSION = [
   /live (deal|target|seller)/i
 ];
 
+const BANNED_MARKETING = [
+  /^unlock/i,
+  /^enhance/i,
+  /^achieve/i,
+  /growth strateg/i,
+  /growth potential/i,
+  /growth opportunit/i
+];
+
 const BANNED_SALUTATIONS = /^(hi|hello|dear|hey)\b/i;
 
 const BANNED_SIGNATURE = [
@@ -80,10 +89,10 @@ export function validateTeaser(teaser: string): ValidationResult {
   const errors: string[] = [];
   const text = teaser.trim();
   const words = text.split(/\s+/).filter(Boolean);
-  if (words.length < 6 || words.length > 12) {
-    errors.push(`teaser word count ${words.length} (want 8-10, allow 6-12)`);
+  if (words.length < 5 || words.length > 14) {
+    errors.push(`teaser word count ${words.length} (want 8-10, allow 5-14)`);
   }
-  for (const p of [...BANNED_POSSESSION, ...BANNED_ROBOTIC]) {
+  for (const p of [...BANNED_POSSESSION, ...BANNED_ROBOTIC, ...BANNED_MARKETING]) {
     if (p.test(text)) errors.push(`teaser matches banned pattern: ${p}`);
   }
   const dims = countTeaserDimensions(text);
@@ -98,7 +107,7 @@ export function validateCta(cta: string): ValidationResult {
   const text = cta.trim();
   if (!text) errors.push("cta is empty");
   const hasConnectivity =
-    /connect you with|intro(s|duce)? (you )?to|point you toward|companies like|fit your (criteria|mandate|portfolio)|aligned with your|fall under your|investment vision/i.test(
+    /connect you with|intro(s|duce)? (you )?to|point you toward|companies like|fit your|aligned with your|fall under your|investment vision|your (mandate|portfolio|focus|criteria)/i.test(
       text
     );
   if (!hasConnectivity) {
