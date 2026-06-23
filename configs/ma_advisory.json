@@ -10,15 +10,16 @@
   },
   "campaigns": {
     "smtp": {
-      "workspaceId": "PLACEHOLDER",
-      "campaignId": "PLACEHOLDER"
+      "workspaceId": "zs",
+      "campaignId": "6a3a8367b0baf820fe011afb"
     },
     "catchAll": {
-      "workspaceId": "PLACEHOLDER",
-      "campaignId": "PLACEHOLDER"
+      "workspaceId": "zs",
+      "campaignId": "6a3a8367b0baf820fe011afb"
     }
   },
   "limits": {
-    "openaiConcurrency": 80
+    "openaiConcurrency": 80,
+    "uploadConcurrency": 4
   }
 }

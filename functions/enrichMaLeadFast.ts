@@ -93,7 +93,7 @@ Rules:
   );
 
   const parsed = parseFastJson(out.choices[0]?.message?.content ?? "{}");
-  const opening = parsed.opening_line || `Curious how ${companyNameNormalized} is sourcing deals lately`;
+  const opening = stripLeadingFirstName(parsed.opening_line || `Curious how ${companyNameNormalized} is sourcing deals lately`, firstName);
   const teaser = parsed.teaser || buildQuickTeaser(parsed);
   const cta =
     parsed.cta ||
@@ -174,4 +174,10 @@ function buildQuickTeaser(parsed: ParsedFast): string {
   if (ind && type) return `${type} in ${ind}`;
   if (parsed.deal_size_bands[0] && ind) return `${parsed.deal_size_bands[0]} ${ind} company`;
   return "Founder-led niche platform business";
+}
+
+function stripLeadingFirstName(line: string, firstName: string): string {
+  if (!firstName) return line.trim();
+  const pattern = new RegExp(`^${firstName}\\s*[,!—–-]?\\s*`, "i");
+  return line.replace(pattern, "").trim() || line.trim();
 }
