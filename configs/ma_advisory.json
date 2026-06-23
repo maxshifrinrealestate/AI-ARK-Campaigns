@@ -1,0 +1,25 @@
+{
+  "vertical": "ma_advisory",
+  "company": {
+    "name": "AI Ark",
+    "description": "We help M&A advisors, investment bankers, and capital advisory firms discover relevant sell-side and buy-side opportunities that align with their mandate and portfolio focus."
+  },
+  "product": {
+    "name": "Deal Connectivity",
+    "description": "We connect advisory firms with companies that match their ideal client profile, investment criteria, and sector focus — without claiming to hold specific live accounts."
+  },
+  "campaigns": {
+    "smtp": {
+      "workspaceId": "zs",
+      "campaignId": "6a3a8367b0baf820fe011afb"
+    },
+    "catchAll": {
+      "workspaceId": "zs",
+      "campaignId": "6a3a8367b0baf820fe011afb"
+    }
+  },
+  "limits": {
+    "openaiConcurrency": 80,
+    "uploadConcurrency": 4
+  }
+}
