@@ -93,7 +93,9 @@ async function run(): Promise<void> {
   const campaignId = argValue("--campaign") ?? "6a3a8367b0baf820fe011afb";
   const workspaceName = argValue("--workspace") ?? "zs";
   const enrichOnly = hasFlag("--enrich-only");
+  const uploadOnly = hasFlag("--upload-only");
   const skipUpload = hasFlag("--skip-upload");
+  const enrichedInput = argValue("--enriched");
 
   const enrichConcurrency = Math.max(
     1,
@@ -147,65 +149,118 @@ async function run(): Promise<void> {
 
   fs.writeFileSync(path.join(outDir, "removed_leads.csv"), stringify(removed, { header: true }));
 
-  const t0 = Date.now();
-  let done = 0;
-  const enrichedRows = await mapPool(eligible, enrichConcurrency, async (lead) => {
-    const enriched = await enrichMaLeadFast(
-      {
-        first_name: lead.first_name,
-        last_name: lead.last_name,
-        title: lead.title,
-        company_name: lead.company_name,
-        company_name_normalized: lead.company_name_normalized,
-        company_description: lead.company_description,
-        company_products_services: lead.company_products_services,
-        company_industry: lead.company_industry,
-        company_size: lead.company_size,
-        city: lead.city,
-        state: lead.state,
-        country: lead.country,
-        company_website: lead.company_website,
-        company_linkedin: lead.company_linkedin
-      },
-      config.product.description
-    );
+  let enrichedRows: Array<{ lead: PreparedMaLead; enriched: Awaited<ReturnType<typeof enrichMaLeadFast>> }> =
+    [];
 
-    done++;
-    if (done % 100 === 0 || done === eligible.length) {
-      const elapsed = (Date.now() - t0) / 1000;
-      console.log(`[ma-pipeline] enriched ${done}/${eligible.length} (${(done / elapsed).toFixed(1)}/s)`);
+  if (uploadOnly && enrichedInput) {
+    const prev = parse(fs.readFileSync(enrichedInput, "utf-8"), {
+      columns: true,
+      skip_empty_lines: true,
+      bom: true
+    }) as Record<string, string>[];
+    for (const row of prev) {
+      const email = clean(row.email ?? row.email_business).toLowerCase();
+      if (!email) continue;
+      const lead: PreparedMaLead = {
+        raw: row,
+        first_name: clean(row.first_name),
+        last_name: clean(row.last_name),
+        title: clean(row.title),
+        email_business: email,
+        domain_settings: clean(row.domain_settings) || "SMTP",
+        company_name: clean(row.company_name),
+        company_name_normalized: clean(row.company_name_normalized) || clean(row.company_name),
+        company_description: clean(row.company_description),
+        company_products_services: clean(row.company_products_services),
+        company_industry: clean(row.company_industry),
+        company_size: clean(row.company_size),
+        company_website: clean(row.company_website),
+        company_linkedin: clean(row.company_linkedin),
+        city: clean(row.city),
+        state: clean(row.state),
+        country: clean(row.country),
+        linkedin: clean(row.linkedin),
+        email_platform: clean(row.email_platform),
+        esp_classification: clean(row.esp_classification) || "others"
+      };
+      enrichedRows.push({
+        lead,
+        enriched: {
+          company_name_normalized: clean(row.company_name_normalized) || lead.company_name,
+          ma_service_type: clean(row.ma_service_type),
+          icp_portfolio_imagination: clean(row.icp_portfolio_imagination),
+          icp_target_industries: clean(row.icp_target_industries),
+          icp_deal_sizes: clean(row.icp_deal_sizes),
+          icp_company_types: clean(row.icp_company_types),
+          icp_deal_types: clean(row.icp_deal_types),
+          opening_line: clean(row.opening_line),
+          teaser: clean(row.teaser),
+          cta: clean(row.cta),
+          cold_email_html: clean(row.cold_email_html)
+        }
+      });
     }
+    console.log(`[ma-pipeline] upload-only: loaded ${enrichedRows.length} rows from ${enrichedInput}`);
+  } else {
+    const t0 = Date.now();
+    let done = 0;
+    enrichedRows = await mapPool(eligible, enrichConcurrency, async (lead) => {
+      const enriched = await enrichMaLeadFast(
+        {
+          first_name: lead.first_name,
+          last_name: lead.last_name,
+          title: lead.title,
+          company_name: lead.company_name,
+          company_name_normalized: lead.company_name_normalized,
+          company_description: lead.company_description,
+          company_products_services: lead.company_products_services,
+          company_industry: lead.company_industry,
+          company_size: lead.company_size,
+          city: lead.city,
+          state: lead.state,
+          country: lead.country,
+          company_website: lead.company_website,
+          company_linkedin: lead.company_linkedin
+        },
+        config.product.description
+      );
 
-    return {
-      lead,
-      enriched
-    };
-  });
+      done++;
+      if (done % 100 === 0 || done === eligible.length) {
+        const elapsed = (Date.now() - t0) / 1000;
+        console.log(`[ma-pipeline] enriched ${done}/${eligible.length} (${(done / elapsed).toFixed(1)}/s)`);
+      }
 
-  const enrichedCsv = enrichedRows.map(({ lead, enriched }) => ({
-    email: lead.email_business,
-    first_name: lead.first_name,
-    last_name: lead.last_name,
-    title: lead.title,
-    company_name: lead.company_name,
-    company_name_normalized: enriched.company_name_normalized,
-    ma_service_type: enriched.ma_service_type,
-    domain_settings: lead.domain_settings,
-    esp_classification: lead.esp_classification,
-    email_platform: lead.email_platform,
-    icp_portfolio_imagination: enriched.icp_portfolio_imagination,
-    icp_target_industries: enriched.icp_target_industries,
-    opening_line: enriched.opening_line,
-    teaser: enriched.teaser,
-    cta: enriched.cta,
-    cold_email_html: enriched.cold_email_html,
-    city: lead.city,
-    state: lead.state,
-    company_website: lead.company_website
-  }));
+      return { lead, enriched };
+    });
 
-  fs.writeFileSync(path.join(outDir, "enriched_leads.csv"), stringify(enrichedCsv, { header: true }));
-  console.log(`[ma-pipeline] wrote enriched_leads.csv (${enrichedRows.length} rows)`);
+    const enrichedCsv = enrichedRows.map(({ lead, enriched }) => ({
+      email: lead.email_business,
+      first_name: lead.first_name,
+      last_name: lead.last_name,
+      title: lead.title,
+      company_name: lead.company_name,
+      company_name_normalized: enriched.company_name_normalized,
+      ma_service_type: enriched.ma_service_type,
+      domain_settings: lead.domain_settings,
+      esp_classification: lead.esp_classification,
+      email_platform: lead.email_platform,
+      icp_portfolio_imagination: enriched.icp_portfolio_imagination,
+      icp_target_industries: enriched.icp_target_industries,
+      opening_line: enriched.opening_line,
+      teaser: enriched.teaser,
+      cta: enriched.cta,
+      cold_email_html: enriched.cold_email_html,
+      city: lead.city,
+      state: lead.state,
+      company_website: lead.company_website
+    }));
+
+    fs.writeFileSync(path.join(outDir, "enriched_leads.csv"), stringify(enrichedCsv, { header: true }));
+    console.log(`[ma-pipeline] wrote enriched_leads.csv (${enrichedRows.length} rows)`);
+  }
+
+  const t0 = Date.now();
 
   if (enrichOnly || skipUpload) {
     console.log(`[ma-pipeline] enrich-only complete → ${outDir}`);
@@ -216,7 +271,15 @@ async function run(): Promise<void> {
     throw new Error("PLUSVIBE_KEY required for upload. Re-run with key set or use --enrich-only.");
   }
 
-  const workspaceId = await resolveWorkspaceId(workspaceName);
+  const workspaceId =
+    (await resolveWorkspaceId(workspaceName).catch(() => "")) ||
+    process.env.PLUSVIBE_WORKSPACE_ID?.trim() ||
+    "";
+  if (!workspaceId) {
+    throw new Error(
+      `Could not resolve PlusVibe workspace "${workspaceName}". Set PLUSVIBE_WORKSPACE_ID in .env or fix PLUSVIBE_KEY.`
+    );
+  }
   console.log(`[ma-pipeline] uploading to workspace=${workspaceId} campaign=${campaignId}`);
 
   const payloads = enrichedRows.map(({ lead, enriched }) => toPlusVibePayload(lead, enriched));
