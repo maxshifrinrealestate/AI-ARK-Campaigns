@@ -19,6 +19,6 @@
     }
   },
   "limits": {
-    "openaiConcurrency": 3
+    "openaiConcurrency": 80
   }
 }
