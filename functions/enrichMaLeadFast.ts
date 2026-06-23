@@ -62,7 +62,7 @@ Return JSON:
   "deal_size_bands": ["1-3 ranges"],
   "target_company_types": ["1-3 types"],
   "deal_types": ["1-3 deal types"],
-  "opening_line": "human opening after first name, under 20 words, specific to their firm",
+  "opening_line": "human opening after first name, under 20 words, specific to their firm, do NOT include the prospect's first name",
   "teaser": "8-10 words, blinded company matching THEIR portfolio imagination, max 2 dimensions (industry+size OR type+industry etc), NOT generic family-owned mid-market",
   "cta": "one sentence, vague connectivity to companies like the teaser, aligned with their mandate/portfolio"
 }
