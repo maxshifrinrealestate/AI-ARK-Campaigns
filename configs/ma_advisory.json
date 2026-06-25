@@ -10,11 +10,11 @@
   },
   "campaigns": {
     "smtp": {
-      "workspaceId": "zs",
+      "workspaceId": "69a5b2169433a45c6f6d7d1c",
       "campaignId": "6a3a8367b0baf820fe011afb"
     },
     "catchAll": {
-      "workspaceId": "zs",
+      "workspaceId": "69a5b2169433a45c6f6d7d1c",
       "campaignId": "6a3a8367b0baf820fe011afb"
     }
   },

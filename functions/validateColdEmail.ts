@@ -9,7 +9,15 @@ const BANNED_ROBOTIC = [
   /i came across your firm/i,
   /hope this finds you well/i,
   /just reaching out/i,
-  /i wanted to reach out/i
+  /i wanted to reach out/i,
+  /\bimpressive\b/i,
+  /\bexcels\b/i,
+  /\bstands out\b/i,
+  /\bunique approach\b/i,
+  /\bpowerful catalyst\b/i,
+  /\btruly\b/i,
+  /is vital\b/i,
+  /is inspiring\b/i
 ];
 
 const BANNED_POSSESSION = [

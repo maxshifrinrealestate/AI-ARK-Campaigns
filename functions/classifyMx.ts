@@ -105,6 +105,15 @@ function classifyEsp(mxData: string): Esp {
   return "others";
 }
 
+export function espFromMxData(mxData: string): Esp {
+  return classifyEsp(mxData);
+}
+
+export function isSegMxData(mxData: string): boolean {
+  const lower = mxData.toLowerCase();
+  return SEG_PATTERNS.some((p) => lower.includes(p));
+}
+
 export async function classifyMx(domain: string): Promise<MxResult> {
   const d = domain.trim().toLowerCase();
   if (!d) {

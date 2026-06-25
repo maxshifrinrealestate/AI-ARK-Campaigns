@@ -39,6 +39,7 @@ const HEADER_MAP: Record<string, string> = {
   state: "state",
   city: "city",
   linkedin: "linkedin",
+  organization: "organization",
   company_name: "company_name",
   company_size: "company_size",
   company_industry: "company_industry",
@@ -47,7 +48,8 @@ const HEADER_MAP: Record<string, string> = {
   company_website: "company_website",
   company_linkedin: "company_linkedin",
   normalized_company_name: "company_name_normalized",
-  email_platform: "email_platform"
+  email_platform: "email_platform",
+  mx_records: "mx_records"
 };
 
 export function normalizeSheetRow(row: MaSheetRow): MaSheetRow {
@@ -60,7 +62,19 @@ export function normalizeSheetRow(row: MaSheetRow): MaSheetRow {
   if (row.company_product_and_services && !out.company_products_services) {
     out.company_products_services = row.company_product_and_services;
   }
+  if (!out.company_name && out.organization) {
+    out.company_name = out.organization;
+  }
   return out;
+}
+
+/** Maps sheet values like SMTP_VALID / CATCH_ALL_VALID to canonical SMTP | CatchAll | "". */
+export function normalizeDomainSetting(raw: unknown): "SMTP" | "CatchAll" | "" {
+  const norm = cleanText(raw).toLowerCase().replace(/[^a-z]/g, "");
+  if (!norm) return "";
+  if (norm === "smtp" || norm.startsWith("smtpvalid")) return "SMTP";
+  if (norm === "catchall" || norm.startsWith("catchallvalid")) return "CatchAll";
+  return "";
 }
 
 export function mapEsp(platform: string): string {
@@ -76,7 +90,7 @@ export function gateMaLead(row: MaSheetRow): GateResult {
   const r = normalizeSheetRow(row);
   const email = cleanText(r.email_business).toLowerCase();
   const domainSettingsRaw = cleanText(r.domain_settings);
-  const domainNorm = domainSettingsRaw.toLowerCase().replace(/[^a-z]/g, "");
+  const domainSetting = normalizeDomainSetting(domainSettingsRaw);
   const platform = cleanText(r.email_platform);
 
   if (!email) {
@@ -87,7 +101,7 @@ export function gateMaLead(row: MaSheetRow): GateResult {
     return { ok: false, reason: "security_gateway", email, detail: platform || "SEG" };
   }
 
-  if (domainNorm !== "smtp" && domainNorm !== "catchall") {
+  if (!domainSetting) {
     return {
       ok: false,
       reason: "unknown_domain_setting",
@@ -102,7 +116,7 @@ export function gateMaLead(row: MaSheetRow): GateResult {
     last_name: cleanText(r.last_name),
     title: cleanText(r.title),
     email_business: email,
-    domain_settings: domainNorm === "catchall" ? "CatchAll" : "SMTP",
+    domain_settings: domainSetting,
     company_name: cleanText(r.company_name),
     company_name_normalized: cleanText(r.company_name_normalized) || cleanText(r.company_name),
     company_description: cleanText(r.company_description),

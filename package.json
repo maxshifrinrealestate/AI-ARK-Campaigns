@@ -13,7 +13,8 @@
     "shards": "tsx scripts/run-parallel-shards.ts",
     "enrich-ma": "tsx scripts/enrich-ma-outreach.ts",
     "enrich-ma-shards": "tsx scripts/run-ma-shards.ts",
-    "ma-pipeline": "tsx scripts/run-ma-pipeline.ts"
+    "ma-pipeline": "tsx scripts/run-ma-pipeline.ts",
+    "ma-test": "tsx scripts/run-ma-test-pipeline.ts"
   },
   "engines": {
     "node": ">=20.0.0"
