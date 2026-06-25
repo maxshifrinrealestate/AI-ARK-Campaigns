@@ -14,7 +14,8 @@
     "enrich-ma": "tsx scripts/enrich-ma-outreach.ts",
     "enrich-ma-shards": "tsx scripts/run-ma-shards.ts",
     "ma-pipeline": "tsx scripts/run-ma-pipeline.ts",
-    "ma-test": "tsx scripts/run-ma-test-pipeline.ts"
+    "ma-test": "tsx scripts/run-ma-test-pipeline.ts",
+    "ma-full": "tsx scripts/run-ma-full-pipeline.ts"
   },
   "engines": {
     "node": ">=20.0.0"
