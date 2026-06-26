@@ -15,6 +15,7 @@ const OUTLOOK_PATTERNS = ["outlook", "office365", "microsoft", "hotmail", "prote
 const SEG_PATTERNS = [
   "proofpoint",
   "pphosted",
+  "ppe-hosted",
   "mimecast",
   "barracuda",
   "barracudanetworks",
