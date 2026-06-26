@@ -1,0 +1,21 @@
+{
+  "input_rows": 4524,
+  "eligible": 3362,
+  "enriched": 3362,
+  "removed": 1162,
+  "routing": {
+    "smtp": 2714,
+    "catchAll": 648,
+    "google": 720,
+    "outlook": 1671,
+    "others": 971
+  },
+  "upload": {
+    "ok": 3362,
+    "failed": 0,
+    "errors": []
+  },
+  "workspace_id": "69a5b2169433a45c6f6d7d1c",
+  "campaign_id": "6a3a8367b0baf820fe011afb",
+  "elapsed_seconds": "52.9"
+}

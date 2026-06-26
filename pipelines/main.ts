@@ -306,7 +306,7 @@ async function processLeadRow(
     : {
         email: activeEmail,
         campaign_id: route.target.campaignId,
-        error_message: upload.error
+        error_message: upload.error ?? "upload failed"
       };
 
   return {

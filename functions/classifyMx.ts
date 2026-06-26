@@ -15,6 +15,7 @@ const OUTLOOK_PATTERNS = ["outlook", "office365", "microsoft", "hotmail", "prote
 const SEG_PATTERNS = [
   "proofpoint",
   "pphosted",
+  "ppe-hosted",
   "mimecast",
   "barracuda",
   "barracudanetworks",
@@ -103,6 +104,15 @@ function classifyEsp(mxData: string): Esp {
   if (GOOGLE_PATTERNS.some((p) => lower.includes(p))) return "google";
   if (OUTLOOK_PATTERNS.some((p) => lower.includes(p))) return "outlook";
   return "others";
+}
+
+export function espFromMxData(mxData: string): Esp {
+  return classifyEsp(mxData);
+}
+
+export function isSegMxData(mxData: string): boolean {
+  const lower = mxData.toLowerCase();
+  return SEG_PATTERNS.some((p) => lower.includes(p));
 }
 
 export async function classifyMx(domain: string): Promise<MxResult> {
