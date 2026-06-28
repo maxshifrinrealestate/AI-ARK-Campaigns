@@ -8,8 +8,6 @@ import { classifyMx, cleanText, resolveLeadDomain } from "../functions/classifyM
 import { normalizeCompany } from "../functions/normalizeCompany.js";
 import { classifyCompanyType } from "../functions/classifyCompanyType.js";
 import { enrichStaffingTalent } from "../functions/enrichStaffingTalent.js";
-import { findEmailsBatch, type FindEmailResult } from "../functions/findEmail.js";
-import { verifyEmail } from "../functions/verifyEmail.js";
 import { routeCampaign, type CampaignsConfig } from "../functions/routeCampaign.js";
 import { mapPool } from "../functions/mapPool.js";
 import {
@@ -105,22 +103,13 @@ function wrapEmailBody(raw: LeadRow): string {
   return `<div>${htmlLines.join("<br>")}</div>`;
 }
 
-function leadNeedsTryKitt(raw: LeadRow): boolean {
-  return !cleanText(raw.email_business);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 async function processRow(
   raw: LeadRow,
   config: StaffingConfig,
   workspaceId: string,
-  index: number,
-  trykittCache: Map<number, FindEmailResult>,
-  dryRun: boolean,
-  skipEnrich: boolean
+  _index: number,
+  dryRun: boolean
 ): Promise<{ kind: "removed"; removed: RemovedLead } | { kind: "uploaded"; uploaded: UploadedLead; payload: PlusVibeLeadPayload }> {
   const firstName = salutationFirstName(raw);
   const lastName = cleanText(raw.last_name);
@@ -132,9 +121,10 @@ async function processRow(
   });
 
   const emailBusiness = cleanText(raw.email_business);
+  if (!emailBusiness) return drop("no_email_found");
+
   const companyWebsite = cleanText(raw.company_website);
   const domain = resolveLeadDomain(emailBusiness, companyWebsite);
-  const trykittEligible = leadNeedsTryKitt(raw);
 
   let mx;
   try {
@@ -143,43 +133,25 @@ async function processRow(
     mx = { domain, mxData: "", esp: "empty" as const, isSeg: false };
   }
   if (mx.isSeg) return drop("security_gateway", emailBusiness, mx.mxData);
+  if (mx.esp === "outlook") return drop("outlook_skipped", emailBusiness, mx.mxData);
 
-  let activeEmail = "";
-  let emailSource: "csv" | "trykit" = "csv";
+  const activeEmail = emailBusiness.toLowerCase();
+  const emailSource = "csv";
 
-  if (emailBusiness) {
-    activeEmail = emailBusiness.toLowerCase();
-  } else {
-    const cached = trykittCache.get(index);
-    if (!cached?.email) return drop("no_email_found", "", cached?.domainUsed);
-    const verify = await verifyEmail(cached.email);
-    if (!verify.accepted) return drop("email_unverified", cached.email, verify.status);
-    activeEmail = cached.email;
-    emailSource = "trykit";
-  }
-
-  const companyNameNormalized = skipEnrich
-    ? companyName
-    : await normalizeCompany(raw.company_name);
-  const companyType = skipEnrich
-    ? ""
-    : await classifyCompanyType({
-        companyNameNormalized,
-        companyDescription: raw.company_description,
-        companyProductsServices: productsField(raw)
-      });
-  const staffing = skipEnrich
-    ? { clientType: "", talentType: "" }
-    : await enrichStaffingTalent({
-        companyNameNormalized,
-        companyDescription: raw.company_description,
-        companyProductsServices: productsField(raw),
-        title: raw.title
-      });
-
-  const route = routeCampaign(raw.domain_settings, config.campaigns, {
-    treatEmptyAsSmtp: trykittEligible || emailSource === "trykit"
+  const companyNameNormalized = await normalizeCompany(raw.company_name);
+  const companyType = await classifyCompanyType({
+    companyNameNormalized,
+    companyDescription: raw.company_description,
+    companyProductsServices: productsField(raw)
   });
+  const staffing = await enrichStaffingTalent({
+    companyNameNormalized,
+    companyDescription: raw.company_description,
+    companyProductsServices: productsField(raw),
+    title: raw.title
+  });
+
+  const route = routeCampaign(raw.domain_settings, config.campaigns);
   if (!route.ok) return drop("unknown_domain_setting", activeEmail, route.rawValue);
 
   const emailBody = wrapEmailBody(raw);
@@ -229,6 +201,10 @@ async function processRow(
   return { kind: "uploaded", uploaded, payload };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function run(): Promise<void> {
   const input = argValue("--input") ?? "data/staffing_leads_24.csv";
   const configPath = argValue("--config") ?? "configs/staffing_zs.json";
@@ -238,8 +214,6 @@ async function run(): Promise<void> {
     argValue("--campaign") ?? process.env.STAFFING_CAMPAIGN_ID ?? "6a414d310cd53ac8421e1e91";
   const dryRun = hasFlag("--dry-run");
   const skipUpload = hasFlag("--skip-upload") || dryRun;
-  const skipEnrich = hasFlag("--skip-enrich") || dryRun;
-  const emailsOnly = hasFlag("--emails-only");
   const concurrency = Math.max(1, Number(argValue("--concurrency") ?? "5"));
   const uploadBatchSize = Math.max(1, Number(argValue("--upload-batch") ?? "5"));
 
@@ -254,46 +228,30 @@ async function run(): Promise<void> {
   config.campaigns.catchAll.campaignId = campaignId;
 
   const leadsAll = readLeadsCsv(input);
-  const leads = emailsOnly ? leadsAll.filter((r) => cleanText(r.email_business)) : leadsAll;
-  const needsTryKitt = leads.some(leadNeedsTryKitt);
-  if (needsTryKitt && !dryRun && !skipUpload) {
-    for (const k of ["TRYKITT_API_KEY", "MILLIONVERIFIER_API_KEY"]) {
-      if (!process.env[k]) throw new Error(`Missing env var: ${k}`);
-    }
-  }
+  const leads = leadsAll.filter((r) => cleanText(r.email_business));
+  const noEmailRemoved: RemovedLead[] = leadsAll
+    .filter((r) => !cleanText(r.email_business))
+    .map((r) => ({
+      first_name: salutationFirstName(r),
+      last_name: cleanText(r.last_name),
+      company_name: cleanText(r.company_name),
+      email: "",
+      reason: "no_email_found",
+      detail: "skipped without enrichment"
+    }));
 
-  const workspaceId = dryRun
-    ? config.campaigns.smtp.workspaceId
-    : await resolveWorkspaceId(workspaceName);
+  const workspaceId =
+    dryRun || skipUpload
+      ? config.campaigns.smtp.workspaceId
+      : await resolveWorkspaceId(workspaceName).catch(() => config.campaigns.smtp.workspaceId);
   config.campaigns.smtp.workspaceId = workspaceId;
   config.campaigns.catchAll.workspaceId = workspaceId;
 
   fs.mkdirSync(outDir, { recursive: true });
 
-  console.log(`[staffing] ${leads.length} leads from ${input}`);
+  console.log(`[staffing] ${leads.length} leads with email from ${input}`);
   console.log(`[staffing] workspace=${workspaceId} (${workspaceName}) campaign=${campaignId}`);
-  console.log(`[staffing] dryRun=${dryRun} skipUpload=${skipUpload} skipEnrich=${skipEnrich} emailsOnly=${emailsOnly}`);
-
-  const trykittCache = new Map<number, FindEmailResult>();
-  const trykittItems = leads
-    .map((raw, i) => ({ raw, i }))
-    .filter(({ raw }) => leadNeedsTryKitt(raw))
-    .map(({ raw, i }) => ({
-      key: i,
-      firstName: salutationFirstName(raw),
-      lastName: raw.last_name,
-      companyName: raw.company_name,
-      companyWebsite: raw.company_website,
-      personLinkedin: raw.linkedin
-    }));
-
-  if (trykittItems.length > 0 && !dryRun) {
-    console.log(`[staffing] trykitt prefetch: ${trykittItems.length}`);
-    const batch = await findEmailsBatch(trykittItems);
-    for (const [key, result] of batch) trykittCache.set(Number(key), result);
-    const found = [...batch.values()].filter((r) => r.email).length;
-    console.log(`[staffing] trykitt found ${found}/${trykittItems.length}`);
-  }
+  console.log(`[staffing] dryRun=${dryRun} skipUpload=${skipUpload} skipOutlook=true`);
 
   const uploaded: UploadedLead[] = [];
   const removed: RemovedLead[] = [];
@@ -301,7 +259,7 @@ async function run(): Promise<void> {
 
   let completed = 0;
   const outcomes = await mapPool(leads, concurrency, async (raw, i) => {
-    const outcome = await processRow(raw, config, workspaceId, i, trykittCache, dryRun, skipEnrich);
+    const outcome = await processRow(raw, config, workspaceId, i, dryRun);
     completed++;
     if (completed % 5 === 0 || completed === leads.length) {
       console.log(`[staffing] enriched ${completed}/${leads.length}`);
@@ -317,6 +275,7 @@ async function run(): Promise<void> {
     uploaded.push(outcome.uploaded);
     if (!dryRun && !skipUpload) uploadQueue.push(outcome.payload);
   }
+  removed.push(...noEmailRemoved);
 
   let uploadOk = 0;
   let uploadFailed = 0;
@@ -359,7 +318,8 @@ async function run(): Promise<void> {
         input,
         workspace_id: workspaceId,
         campaign_id: campaignId,
-        total: leads.length,
+        total: leadsAll.length,
+        with_email: leads.length,
         uploaded: uploaded.length,
         removed: removed.length,
         plusvibe_ok: uploadOk,
