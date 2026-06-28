@@ -100,7 +100,7 @@ function wrapEmailBody(raw: LeadRow): string {
     const text = i === 0 && first && !line.startsWith(first) ? `${first}, ${line}` : line;
     return text;
   });
-  return `<div>${htmlLines.join("<br>")}</div>`;
+  return `<div>${htmlLines.join("<br></br>")}</div>`;
 }
 
 
