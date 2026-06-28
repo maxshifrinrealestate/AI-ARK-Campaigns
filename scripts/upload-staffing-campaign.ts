@@ -4,10 +4,9 @@ import path from "node:path";
 import { parse } from "csv-parse/sync";
 import { stringify } from "csv-stringify/sync";
 
-import { classifyMx, cleanText, resolveLeadDomain } from "../functions/classifyMx.js";
-import { normalizeCompany } from "../functions/normalizeCompany.js";
-import { classifyCompanyType } from "../functions/classifyCompanyType.js";
+import { classifyMx, cleanText, resolveLeadDomain, type MxResult } from "../functions/classifyMx.js";
 import { enrichStaffingTalent } from "../functions/enrichStaffingTalent.js";
+import { personalizeStaffingEmail, personalizeStaffingEmailLocal } from "../functions/personalizeStaffingEmail.js";
 import { routeCampaign, type CampaignsConfig } from "../functions/routeCampaign.js";
 import { mapPool } from "../functions/mapPool.js";
 import {
@@ -54,6 +53,17 @@ type UploadedLead = {
   upload_error: string;
 };
 
+const SEG_PATTERNS = [
+  "proofpoint",
+  "pphosted",
+  "mimecast",
+  "barracuda",
+  "barracudanetworks",
+  "messagelabs",
+  "sophos",
+  "securence"
+];
+
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
   if (i < 0) return undefined;
@@ -89,10 +99,29 @@ function salutationFirstName(raw: LeadRow): string {
   return first.split(/\s+/)[0] || first;
 }
 
-function wrapEmailBody(raw: LeadRow): string {
-  const body = cleanText(raw.email_body);
+function mxRecordsField(lead: LeadRow): string {
+  return cleanText(lead.mx_records);
+}
+
+function isOutlookMx(mxData: string): boolean {
+  const m = mxData.toLowerCase();
+  return (
+    m.includes("outlook") ||
+    m.includes("protection.outlook.com") ||
+    m.includes("office365") ||
+    m.includes("microsoft")
+  );
+}
+
+function isSegMx(mxData: string): boolean {
+  const m = mxData.toLowerCase();
+  return SEG_PATTERNS.some((p) => m.includes(p));
+}
+
+function wrapEmailBody(raw: LeadRow, generated?: string): string {
+  const body = cleanText(generated) || cleanText(raw.email_body);
   if (!body) return "";
-  if (body.startsWith("<div>")) return body;
+  if (body.startsWith("<div>")) return body.replace(/<br\s*\/?>/gi, "<br></br>");
   const first = salutationFirstName(raw);
   const lines = body.split(/\n+/).map((l) => l.trim()).filter(Boolean);
   if (lines.length === 0) return "";
@@ -103,13 +132,29 @@ function wrapEmailBody(raw: LeadRow): string {
   return `<div>${htmlLines.join("<br></br>")}</div>`;
 }
 
+async function resolveMx(
+  lead: LeadRow,
+  email: string
+): Promise<MxResult | { kind: "outlook" | "seg"; mxData: string }> {
+  const sheetMx = mxRecordsField(lead);
+  if (sheetMx) {
+    if (isSegMx(sheetMx)) return { kind: "seg", mxData: sheetMx };
+    if (isOutlookMx(sheetMx)) return { kind: "outlook", mxData: sheetMx };
+  }
+
+  const domain = resolveLeadDomain(email, cleanText(lead.company_website));
+  if (!domain) return { domain: "", mxData: "", esp: "empty", isSeg: false };
+  return classifyMx(domain);
+}
 
 async function processRow(
   raw: LeadRow,
   config: StaffingConfig,
   workspaceId: string,
-  _index: number,
-  dryRun: boolean
+  rowIndex: number,
+  dryRun: boolean,
+  openaiScripts: boolean,
+  skipEnrich: boolean
 ): Promise<{ kind: "removed"; removed: RemovedLead } | { kind: "uploaded"; uploaded: UploadedLead; payload: PlusVibeLeadPayload }> {
   const firstName = salutationFirstName(raw);
   const lastName = cleanText(raw.last_name);
@@ -123,46 +168,59 @@ async function processRow(
   const emailBusiness = cleanText(raw.email_business);
   if (!emailBusiness) return drop("no_email_found");
 
-  const companyWebsite = cleanText(raw.company_website);
-  const domain = resolveLeadDomain(emailBusiness, companyWebsite);
-
-  let mx;
-  try {
-    mx = domain ? await classifyMx(domain) : { domain: "", mxData: "", esp: "empty" as const, isSeg: false };
-  } catch {
-    mx = { domain, mxData: "", esp: "empty" as const, isSeg: false };
+  const mx = await resolveMx(raw, emailBusiness);
+  if ("kind" in mx) {
+    return drop(mx.kind === "seg" ? "security_gateway" : "outlook_skipped", emailBusiness, mx.mxData);
   }
   if (mx.isSeg) return drop("security_gateway", emailBusiness, mx.mxData);
   if (mx.esp === "outlook") return drop("outlook_skipped", emailBusiness, mx.mxData);
 
   const activeEmail = emailBusiness.toLowerCase();
-  const emailSource = "csv";
 
-  const companyNameNormalized = await normalizeCompany(raw.company_name);
-  const companyType = await classifyCompanyType({
-    companyNameNormalized,
-    companyDescription: raw.company_description,
-    companyProductsServices: productsField(raw)
-  });
-  const staffing = await enrichStaffingTalent({
-    companyNameNormalized,
-    companyDescription: raw.company_description,
-    companyProductsServices: productsField(raw),
-    title: raw.title
-  });
+  let clientType = "";
+  let talentType = "";
+  if (!skipEnrich) {
+    const staffing = await enrichStaffingTalent({
+      companyNameNormalized: companyName,
+      companyDescription: raw.company_description,
+      companyProductsServices: productsField(raw),
+      title: raw.title
+    });
+    clientType = staffing.clientType;
+    talentType = staffing.talentType;
+  }
 
   const route = routeCampaign(raw.domain_settings, config.campaigns);
   if (!route.ok) return drop("unknown_domain_setting", activeEmail, route.rawValue);
 
-  const emailBody = wrapEmailBody(raw);
+  let emailBody = wrapEmailBody(raw);
+  if (!emailBody) {
+    const scriptInput = {
+      firstName,
+      title: raw.title,
+      companyName,
+      companyDescription: raw.company_description,
+      companyProductsServices: productsField(raw),
+      companyIndustry: raw.company_industry,
+      city: raw.city,
+      state: raw.state,
+      talentType,
+      rowIndex
+    };
+    const personalized = openaiScripts
+      ? await personalizeStaffingEmail(scriptInput)
+      : personalizeStaffingEmailLocal(scriptInput);
+    emailBody = personalized.body;
+  }
+
   if (!emailBody) return drop("missing_email_body", activeEmail);
 
   const payload: PlusVibeLeadPayload = {
     email: activeEmail,
     first_name: firstName || undefined,
     last_name: lastName || undefined,
-    company_name: companyNameNormalized || companyName || undefined,
-    company_website: companyWebsite || undefined,
+    company_name: companyName || undefined,
+    company_website: cleanText(raw.company_website) || undefined,
     linkedin_person_url: cleanText(raw.linkedin) || undefined,
     linkedin_company_url: cleanText(raw.company_linkedin) || undefined,
     city: cleanText(raw.city) || undefined,
@@ -170,9 +228,8 @@ async function processRow(
     custom_variables: {
       custom_state: cleanText(raw.state) || "",
       custom_title: cleanText(raw.title) || "",
-      custom_company_type: companyType || "",
-      custom_client_type: staffing.clientType || "",
-      custom_talent_type: staffing.talentType || "",
+      custom_client_type: clientType || "",
+      custom_talent_type: talentType || "",
       custom_email_body: emailBody,
       custom_cold_email: emailBody
     }
@@ -182,16 +239,16 @@ async function processRow(
     first_name: firstName,
     last_name: lastName,
     email: activeEmail,
-    company_name: companyNameNormalized || companyName,
-    client_type: staffing.clientType,
-    talent_type: staffing.talentType,
+    company_name: companyName,
+    client_type: clientType,
+    talent_type: talentType,
     city: cleanText(raw.city),
     state: cleanText(raw.state),
     linkedin: cleanText(raw.linkedin),
-    company_website: companyWebsite,
+    company_website: cleanText(raw.company_website),
     email_body: emailBody,
     domain_settings: route.setting,
-    email_source: emailSource,
+    email_source: "csv",
     plusvibe_workspace_id: workspaceId,
     plusvibe_campaign_id: route.target.campaignId,
     upload_ok: dryRun ? "dry_run" : "pending",
@@ -206,7 +263,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function run(): Promise<void> {
-  const input = argValue("--input") ?? "data/staffing_leads_24.csv";
+  const input = argValue("--input") ?? "data/staffing_leads_full.csv";
   const configPath = argValue("--config") ?? "configs/staffing_zs.json";
   const outDir = path.resolve(argValue("--out-dir") ?? `staffing_zs_run_${Date.now()}`);
   const workspaceName = argValue("--workspace") ?? process.env.PLUSVIBE_WORKSPACE_NAME ?? "zs";
@@ -214,13 +271,20 @@ async function run(): Promise<void> {
     argValue("--campaign") ?? process.env.STAFFING_CAMPAIGN_ID ?? "6a414d310cd53ac8421e1e91";
   const dryRun = hasFlag("--dry-run");
   const skipUpload = hasFlag("--skip-upload") || dryRun;
-  const concurrency = Math.max(1, Number(argValue("--concurrency") ?? "5"));
-  const uploadBatchSize = Math.max(1, Number(argValue("--upload-batch") ?? "5"));
+  const skipEnrich = hasFlag("--skip-enrich");
+  const openaiScripts = hasFlag("--openai-scripts");
+  const start = Math.max(0, Number(argValue("--start") ?? "0"));
+  const limitRaw = argValue("--limit");
+  const limit = limitRaw ? Math.max(1, Number(limitRaw)) : 0;
+  const concurrency = Math.max(1, Number(argValue("--concurrency") ?? process.env.ROW_CONCURRENCY ?? "8"));
+  const uploadBatchSize = Math.max(1, Number(argValue("--upload-batch") ?? "25"));
 
-  const required = ["PLUSVIBE_KEY", "OPENAI_API_KEY"];
   if (!skipUpload && !dryRun) {
-    const missing = required.filter((k) => !process.env[k]);
+    const missing = ["PLUSVIBE_KEY", "OPENAI_API_KEY"].filter((k) => !process.env[k]);
     if (missing.length) throw new Error(`Missing env vars: ${missing.join(", ")}`);
+    if (!skipEnrich && missing.includes("OPENAI_API_KEY")) {
+      throw new Error("OPENAI_API_KEY required for enrichment");
+    }
   }
 
   const config = readConfig(configPath);
@@ -228,7 +292,10 @@ async function run(): Promise<void> {
   config.campaigns.catchAll.campaignId = campaignId;
 
   const leadsAll = readLeadsCsv(input);
-  const leads = leadsAll.filter((r) => cleanText(r.email_business));
+  let leads = leadsAll.filter((r) => cleanText(r.email_business));
+  if (start > 0) leads = leads.slice(start);
+  if (limit > 0) leads = leads.slice(0, limit);
+
   const noEmailRemoved: RemovedLead[] = leadsAll
     .filter((r) => !cleanText(r.email_business))
     .map((r) => ({
@@ -249,9 +316,11 @@ async function run(): Promise<void> {
 
   fs.mkdirSync(outDir, { recursive: true });
 
-  console.log(`[staffing] ${leads.length} leads with email from ${input}`);
-  console.log(`[staffing] workspace=${workspaceId} (${workspaceName}) campaign=${campaignId}`);
-  console.log(`[staffing] dryRun=${dryRun} skipUpload=${skipUpload} skipOutlook=true`);
+  console.log(`[staffing] batch ${start}..${start + leads.length} of ${leadsAll.length} total (${leads.length} with email in batch)`);
+  console.log(`[staffing] workspace=${workspaceId} campaign=${campaignId}`);
+  console.log(
+    `[staffing] dryRun=${dryRun} skipUpload=${skipUpload} skipEnrich=${skipEnrich} openaiScripts=${openaiScripts} concurrency=${concurrency}`
+  );
 
   const uploaded: UploadedLead[] = [];
   const removed: RemovedLead[] = [];
@@ -259,10 +328,18 @@ async function run(): Promise<void> {
 
   let completed = 0;
   const outcomes = await mapPool(leads, concurrency, async (raw, i) => {
-    const outcome = await processRow(raw, config, workspaceId, i, dryRun);
+    const outcome = await processRow(
+      raw,
+      config,
+      workspaceId,
+      start + i,
+      dryRun,
+      openaiScripts,
+      skipEnrich
+    );
     completed++;
-    if (completed % 5 === 0 || completed === leads.length) {
-      console.log(`[staffing] enriched ${completed}/${leads.length}`);
+    if (completed % 25 === 0 || completed === leads.length) {
+      console.log(`[staffing] processed ${completed}/${leads.length}`);
     }
     return outcome;
   });
@@ -275,7 +352,7 @@ async function run(): Promise<void> {
     uploaded.push(outcome.uploaded);
     if (!dryRun && !skipUpload) uploadQueue.push(outcome.payload);
   }
-  removed.push(...noEmailRemoved);
+  if (start === 0) removed.push(...noEmailRemoved);
 
   let uploadOk = 0;
   let uploadFailed = 0;
@@ -294,11 +371,13 @@ async function run(): Promise<void> {
       } else {
         uploadFailed += batch.length;
         for (const lead of batch) {
-          uploadErrors.push({ email: lead.email, error: result.error });
+          uploadErrors.push({ email: lead.email, error: result.error ?? "unknown" });
         }
       }
-      console.log(`[staffing] upload batch ${i + 1}/${batches.length}: ok=${result.ok}`);
-      await sleep(250);
+      if ((i + 1) % 10 === 0 || i + 1 === batches.length) {
+        console.log(`[staffing] upload batch ${i + 1}/${batches.length} ok=${uploadOk} failed=${uploadFailed}`);
+      }
+      await sleep(220);
     }
     for (const row of uploaded) {
       const err = uploadErrors.find((e) => e.email === row.email);
@@ -316,10 +395,12 @@ async function run(): Promise<void> {
       {
         timestamp: new Date().toISOString(),
         input,
+        start,
+        limit: limit || leads.length,
         workspace_id: workspaceId,
         campaign_id: campaignId,
-        total: leadsAll.length,
-        with_email: leads.length,
+        total_in_file: leadsAll.length,
+        batch_with_email: leads.length,
         uploaded: uploaded.length,
         removed: removed.length,
         plusvibe_ok: uploadOk,
