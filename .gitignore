@@ -14,6 +14,7 @@ dist/
 
 # run artifacts (per runbook §5)
 run_outputs_*/
+staffing_zs_run_*/
 shard_logs_*/
 outputs/
 
