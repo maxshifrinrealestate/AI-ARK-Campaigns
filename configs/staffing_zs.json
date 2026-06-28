@@ -10,11 +10,11 @@
   },
   "campaigns": {
     "smtp": {
-      "workspaceId": "694c1ae9ebef3b84192da7fc",
+      "workspaceId": "69a5b2169433a45c6f6d7d1c",
       "campaignId": "6a414d310cd53ac8421e1e91"
     },
     "catchAll": {
-      "workspaceId": "694c1ae9ebef3b84192da7fc",
+      "workspaceId": "69a5b2169433a45c6f6d7d1c",
       "campaignId": "6a414d310cd53ac8421e1e91"
     }
   },
