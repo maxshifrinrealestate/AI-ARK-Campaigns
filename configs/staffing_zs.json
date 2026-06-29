@@ -1,0 +1,25 @@
+{
+  "vertical": "staffing_founders",
+  "company": {
+    "name": "AI Ark",
+    "description": "AI Ark connects staffing and recruiting firms with employer accounts and search opportunities."
+  },
+  "product": {
+    "name": "Staffing Partner Outreach",
+    "description": "Outbound to staffing firm founders offering access to employer accounts that match their placement lanes."
+  },
+  "campaigns": {
+    "smtp": {
+      "workspaceId": "69a5b2169433a45c6f6d7d1c",
+      "campaignId": "6a414d310cd53ac8421e1e91"
+    },
+    "catchAll": {
+      "workspaceId": "69a5b2169433a45c6f6d7d1c",
+      "campaignId": "6a414d310cd53ac8421e1e91"
+    }
+  },
+  "limits": {
+    "openaiConcurrency": 5,
+    "uploadConcurrency": 3
+  }
+}

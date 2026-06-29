@@ -10,7 +10,8 @@
     "dev": "tsx watch index.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json",
-    "shards": "tsx scripts/run-parallel-shards.ts"
+    "staffing-upload": "tsx scripts/upload-staffing-campaign.ts",
+    "staffing-prepare": "tsx scripts/prepare-staffing-sheet.ts"
   },
   "engines": {
     "node": ">=20.0.0"
